@@ -1,14 +1,13 @@
 import streamlit as st
 import google.generativeai as genai
-# --- KHU VỰC IMPORT ĐÃ ĐƯỢC FIX LỖI ---
+# --- CẬP NHẬT IMPORT CHUẨN (FIX LỖI) ---
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-# Dùng langchain_text_splitters thay vì langchain.text_splitter
-from langchain_text_splitters import RecursiveCharacterTextSplitter 
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-# Gọi load_qa_chain từ langchain.chains (đường dẫn gốc an toàn nhất)
-from langchain.chains import load_qa_chain 
+# Đường dẫn chính xác nhất của load_qa_chain:
+from langchain.chains.question_answering import load_qa_chain
 from langchain.prompts import PromptTemplate
-# --------------------------------------
+# ---------------------------------------
 from PyPDF2 import PdfReader
 from docx import Document
 from PIL import Image
@@ -20,16 +19,15 @@ import zipfile
 import os
 
 # --- CẤU HÌNH ---
-st.set_page_config(page_title="Ultimate AI: God Mode (Final Fix)", page_icon="☯️", layout="wide")
+st.set_page_config(page_title="Ultimate AI: God Mode (Stable)", page_icon="☯️", layout="wide")
 st.markdown("""<style>.stButton>button {background-color: #8e44ad; color: white;}</style>""", unsafe_allow_html=True)
 
-# --- KẾT NỐI API ---
+# --- KẾT NỐI API & TỰ ĐỘNG QUÉT MODEL ---
 try:
     api_key = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=api_key)
     os.environ["GOOGLE_API_KEY"] = api_key
     
-    # TỰ ĐỘNG QUÉT MODEL
     available_models = []
     try:
         for m in genai.list_models():
@@ -132,7 +130,7 @@ def save_docx_new(content):
     return bio
 
 # --- GIAO DIỆN CHÍNH ---
-st.title("☯️ Ultimate AI: God Mode")
+st.title("☯️ Ultimate AI: God Mode (Fixed)")
 
 # --- SIDEBAR: CẤU HÌNH ---
 with st.sidebar:
