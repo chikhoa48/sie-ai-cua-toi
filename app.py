@@ -1,25 +1,25 @@
 import streamlit as st
 import google.generativeai as genai
-import os
-import io
-import requests
-import time
-import zipfile
+import os, io, requests, time, zipfile
 from PIL import Image
 from PyPDF2 import PdfReader
 from docx import Document
 from bs4 import BeautifulSoup
 
-# --- KHU VỰC IMPORT LANGCHAIN (ĐÃ FIX LỖI TRIỆT ĐỂ) ---
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain.chains.question_answering import load_qa_chain
-from langchain.prompts import PromptTemplate
+# --- KHU VỰC IMPORT LANGCHAIN (FIX LỖI CỰC MẠNH) ---
+try:
+    from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    from langchain_community.vectorstores import FAISS
+    from langchain.chains.question_answering import load_qa_chain
+    from langchain.prompts import PromptTemplate
+except ImportError:
+    st.error("Hệ thống đang khởi tạo thư viện, vui lòng chờ 1-2 phút rồi bấm F5.")
+    st.stop()
 # -------------------------------------------------------
 
 # --- CẤU HÌNH TRANG WEB ---
-st.set_page_config(page_title="Ultimate AI: God Mode (Stable)", page_icon="☯️", layout="wide")
+st.set_page_config(page_title="Ultimate AI: God Mode", page_icon="☯️", layout="wide")
 st.markdown("""<style>.stButton>button {background-color: #d35400; color: white;}</style>""", unsafe_allow_html=True)
 
 # --- KẾT NỐI API ---
@@ -120,7 +120,7 @@ def save_docx_simple(content):
     return bio
 
 # --- GIAO DIỆN CHÍNH ---
-st.title("☯️ Ultimate AI: God Mode (Final Stable)")
+st.title("☯️ Ultimate AI: God Mode")
 
 with st.sidebar:
     st.header("⚙️ ĐIỀU KHIỂN")
