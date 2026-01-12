@@ -1,15 +1,13 @@
 import streamlit as st
 import google.generativeai as genai
 
-# --- KHU VỰC SỬA LỖI IMPORT (QUAN TRỌNG) ---
+# --- KHU VỰC IMPORT CHUẨN (KHÔNG ĐƯỢC XÓA) ---
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-# FIX LỖI 1: Dùng gạch dưới _ thay vì dấu chấm .
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-# FIX LỖI 2: Đường dẫn đầy đủ cho load_qa_chain
 from langchain.chains.question_answering import load_qa_chain
 from langchain.prompts import PromptTemplate
-# -------------------------------------------
+# ---------------------------------------------
 
 from PyPDF2 import PdfReader
 from docx import Document
@@ -22,7 +20,7 @@ import zipfile
 import os
 
 # --- CẤU HÌNH ---
-st.set_page_config(page_title="Ultimate AI: God Mode (Fixed v2)", page_icon="☯️", layout="wide")
+st.set_page_config(page_title="Ultimate AI: God Mode (Final)", page_icon="☯️", layout="wide")
 st.markdown("""<style>.stButton>button {background-color: #d35400; color: white;}</style>""", unsafe_allow_html=True)
 
 # --- KẾT NỐI API ---
@@ -31,7 +29,6 @@ try:
     genai.configure(api_key=api_key)
     os.environ["GOOGLE_API_KEY"] = api_key
     
-    # Quét model
     available_models = []
     try:
         for m in genai.list_models():
@@ -125,5 +122,93 @@ def save_docx_new(content):
     doc.save(bio)
     return bio
 
-# --- GIAO DIỆN ---
-st.title("☯️ Ultimate AI: God Mod
+# --- GIAO DIỆN CHÍNH ---
+st.title("☯️ Ultimate AI: God Mode (Final)")
+
+with st.sidebar:
+    st.header("⚙️ ĐIỀU KHIỂN")
+    selected_model_name = st.selectbox("Chọn Model:", available_models, index=0)
+    st.success(f"Đang dùng: {selected_model_name}")
+    st.divider()
+    menu = st.radio("CHỨC NĂNG:", ["1. Huấn Luyện (Train Brain)", "2. Hỏi Đại Sư (RAG)", "3. Dịch Thuật Đa Năng"])
+
+if menu == "1. Huấn Luyện (Train Brain)":
+    st.header("🧠 Huấn Luyện AI")
+    uf = st.file_uploader("Nạp sách:", accept_multiple_files=True)
+    if st.button("Train & Tải Bộ Não") and uf:
+        with st.spinner("Đang học..."):
+            raw = get_text_from_files(uf)
+            create_vector_store(get_text_chunks(raw))
+            zip_folder("faiss_index_huyenhoc", "bo_nao.zip")
+            with open("bo_nao.zip", "rb") as fp:
+                st.download_button("📥 Tải Bộ Não", fp, "bo_nao.zip", "application/zip")
+
+elif menu == "2. Hỏi Đại Sư (RAG)":
+    st.header(f"🔮 Hỏi Đáp (Model: {selected_model_name})")
+    brain = st.sidebar.file_uploader("Nạp 'bo_nao.zip':", type="zip")
+    vs = None
+    if brain:
+        with open("temp.zip", "wb") as f: f.write(brain.getbuffer())
+        with zipfile.ZipFile("temp.zip", "r") as z: z.extractall(".")
+        vs = FAISS.load_local("faiss_index_huyenhoc", GoogleGenerativeAIEmbeddings(model="models/embedding-001"), allow_dangerous_deserialization=True)
+        st.sidebar.success("Đã nạp não!")
+    
+    if "msgs" not in st.session_state: st.session_state.msgs = []
+    for m in st.session_state.msgs: st.chat_message(m["role"]).markdown(m["content"])
+    
+    if q := st.chat_input("Hỏi gì đi..."):
+        st.session_state.msgs.append({"role": "user", "content": q})
+        st.chat_message("user").markdown(q)
+        if vs:
+            docs = vs.similarity_search(q, k=4)
+            chain = load_qa_chain(ChatGoogleGenerativeAI(model=selected_model_name), chain_type="stuff", prompt=PromptTemplate(template="Dựa vào sách: {context}\nTrả lời: {question}", input_variables=["context", "question"]))
+            res = chain({"input_documents": docs, "question": q}, return_only_outputs=True)
+            st.session_state.msgs.append({"role": "assistant", "content": res["output_text"]})
+            st.chat_message("assistant").markdown(res["output_text"])
+        else: st.error("Chưa nạp bộ não!")
+
+elif menu == "3. Dịch Thuật Đa Năng":
+    st.header(f"🏭 Dịch Thuật")
+    c1, c2 = st.columns(2)
+    with c1: instr = st.text_area("Yêu cầu:", value="Dịch sang tiếng Việt.", height=100)
+    with c2: gloss = st.text_area("Từ điển:", value="Insight\nROI", height=100)
+    t1, t2, t3 = st.tabs(["Word (Giữ Ảnh)", "Link/Text", "Dịch Ảnh"])
+    
+    with t1:
+        df = st.file_uploader("File Word:", type=['docx'])
+        if df and st.button("🚀 Dịch File"):
+            processed = translate_docx_preserve_layout(df, instr, gloss, selected_model_name)
+            st.download_button(f"📥 Tải {df.name}", processed.getvalue(), f"VN_{df.name}", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            
+    with t2:
+        urls = st.text_area("Link:")
+        if st.button("🚀 Dịch Link"):
+            links = urls.split('\n')
+            full = ""
+            bar = st.progress(0)
+            model_t = genai.GenerativeModel(selected_model_name)
+            for i, link in enumerate(links):
+                if link.strip():
+                    raw = scrape_chapter(link.strip())
+                    if raw:
+                        try:
+                            res = model_t.generate_content(f"Yêu cầu: {instr}\nNội dung: {raw[:15000]}")
+                            full += f"\n\n--- {link} ---\n{res.text}"
+                        except: pass
+                    bar.progress((i+1)/len(links))
+            st.download_button("Tải về", save_docx_new(full).getvalue(), "Truyen_Web.docx")
+            
+    with t3:
+        imgs = st.file_uploader("Ảnh:", accept_multiple_files=True, type=['png', 'jpg'])
+        if imgs and st.button("🚀 Dịch Ảnh"):
+            full_trans = ""
+            model_v = genai.GenerativeModel(selected_model_name)
+            for img_file in imgs:
+                img = Image.open(img_file)
+                st.image(img, width=200)
+                try:
+                    res = model_v.generate_content([f"Dịch sang TV. Yêu cầu: {instr}", img])
+                    full_trans += f"\n\n--- {img_file.name} ---\n{res.text}"
+                except: pass
+            st.text_area("Kết quả:", full_trans)
+            st.download_button("Tải về", save_docx_new(full_trans).getvalue(), "Dich_Anh.docx")
