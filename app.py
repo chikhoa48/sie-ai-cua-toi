@@ -1,12 +1,14 @@
 import streamlit as st
 import google.generativeai as genai
-# --- CẬP NHẬT IMPORT MỚI ĐỂ SỬA LỖI ---
+# --- KHU VỰC IMPORT ĐÃ ĐƯỢC FIX LỖI ---
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-from langchain_text_splitters import RecursiveCharacterTextSplitter # <-- Đã sửa dòng này
+# Dùng langchain_text_splitters thay vì langchain.text_splitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter 
 from langchain_community.vectorstores import FAISS
-from langchain.chains.question_answering import load_qa_chain
+# Gọi load_qa_chain từ langchain.chains (đường dẫn gốc an toàn nhất)
+from langchain.chains import load_qa_chain 
 from langchain.prompts import PromptTemplate
-# ---------------------------------------
+# --------------------------------------
 from PyPDF2 import PdfReader
 from docx import Document
 from PIL import Image
@@ -18,10 +20,10 @@ import zipfile
 import os
 
 # --- CẤU HÌNH ---
-st.set_page_config(page_title="Ultimate AI: God Mode", page_icon="☯️", layout="wide")
+st.set_page_config(page_title="Ultimate AI: God Mode (Final Fix)", page_icon="☯️", layout="wide")
 st.markdown("""<style>.stButton>button {background-color: #8e44ad; color: white;}</style>""", unsafe_allow_html=True)
 
-# --- KẾT NỐI API & TỰ ĐỘNG QUÉT MODEL ---
+# --- KẾT NỐI API ---
 try:
     api_key = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=api_key)
@@ -58,7 +60,6 @@ def get_text_from_files(files):
     return text
 
 def get_text_chunks(text):
-    # Sử dụng hàm đã import đúng
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=5000, chunk_overlap=500)
     chunks = text_splitter.split_text(text)
     return chunks
@@ -131,30 +132,19 @@ def save_docx_new(content):
     return bio
 
 # --- GIAO DIỆN CHÍNH ---
-st.title("☯️ Ultimate AI: God Mode (Fixed)")
+st.title("☯️ Ultimate AI: God Mode")
 
 # --- SIDEBAR: CẤU HÌNH ---
 with st.sidebar:
     st.header("⚙️ TRUNG TÂM ĐIỀU KHIỂN")
-    
-    selected_model_name = st.selectbox(
-        "Chọn Bộ Não (Model):",
-        available_models,
-        index=0
-    )
+    selected_model_name = st.selectbox("Chọn Bộ Não (Model):", available_models, index=0)
     st.success(f"Đang dùng: {selected_model_name}")
     st.divider()
-    
-    menu = st.radio("CHỨC NĂNG:", [
-        "1. Huấn Luyện & Lưu Trữ (Train Brain)",
-        "2. Hỏi Đại Sư (Dùng Bộ Não)",
-        "3. Dịch Thuật Đa Năng (Sách/Ảnh/Link)"
-    ])
+    menu = st.radio("CHỨC NĂNG:", ["1. Huấn Luyện & Lưu Trữ (Train Brain)", "2. Hỏi Đại Sư (Dùng Bộ Não)", "3. Dịch Thuật Đa Năng"])
 
 # --- MODULE 1: HUẤN LUYỆN ---
 if menu == "1. Huấn Luyện & Lưu Trữ (Train Brain)":
     st.header("🧠 Huấn Luyện AI")
-    st.info("Nạp sách Giang Công, Phong Thủy (PDF/Docx) để tạo 'Bộ Não'.")
     uploaded_files = st.file_uploader("Nạp sách:", accept_multiple_files=True)
     if st.button("Train & Tải Bộ Não"):
         if uploaded_files:
@@ -190,28 +180,23 @@ elif menu == "2. Hỏi Đại Sư (Dùng Bộ Não)":
             st.chat_message("assistant").markdown(res["output_text"])
         else: st.error("Chưa nạp bộ não!")
 
-# --- MODULE 3: DỊCH THUẬT ĐA NĂNG ---
-elif menu == "3. Dịch Thuật Đa Năng (Sách/Ảnh/Link)":
+# --- MODULE 3: DỊCH THUẬT ---
+elif menu == "3. Dịch Thuật Đa Năng":
     st.header(f"🏭 Dịch Thuật (Động cơ: {selected_model_name})")
-    
     col_a, col_b = st.columns(2)
-    with col_a:
-        instruction = st.text_area("Yêu cầu văn phong:", value="Dịch sang tiếng Việt. Sách cổ chữ dọc đọc từ phải sang trái. Văn phong hay.", height=100)
-    with col_b:
-        glossary = st.text_area("Từ điển (Glossary):", value="Insight\nROI\nTrúc Cơ", height=100)
+    with col_a: instruction = st.text_area("Yêu cầu:", value="Dịch sang tiếng Việt.", height=100)
+    with col_b: glossary = st.text_area("Từ điển:", value="Insight\nROI", height=100)
 
-    tab1, tab2, tab3 = st.tabs(["📄 File Word (Giữ Ảnh)", "🌐 Link/Text", "🖼️ Dịch Ảnh (OCR)"])
+    tab1, tab2, tab3 = st.tabs(["📄 Word (Giữ Ảnh)", "🌐 Link/Text", "🖼️ Dịch Ảnh"])
 
     with tab1:
-        st.info("Nạp file Word (.docx). AI sẽ dịch chữ và GIỮ NGUYÊN hình ảnh/bảng biểu.")
         docx_file = st.file_uploader("Tải file Word:", type=['docx'])
-        if docx_file and st.button("🚀 Dịch File Word"):
-            processed_file = translate_docx_preserve_layout(docx_file, instruction, glossary, selected_model_name)
-            st.download_button(f"📥 Tải về {docx_file.name}", processed_file.getvalue(), f"VN_{docx_file.name}", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        if docx_file and st.button("🚀 Dịch File"):
+            processed = translate_docx_preserve_layout(docx_file, instruction, glossary, selected_model_name)
+            st.download_button(f"📥 Tải {docx_file.name}", processed.getvalue(), f"VN_{docx_file.name}", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
     with tab2:
-        st.info("Dán Link truyện hoặc Text. AI sẽ dịch và tạo file Word mới.")
-        urls = st.text_area("Dán Link (Mỗi dòng 1 link):")
+        urls = st.text_area("Dán Link:")
         if st.button("🚀 Dịch Link"):
             links = urls.split('\n')
             full = ""
@@ -222,35 +207,23 @@ elif menu == "3. Dịch Thuật Đa Năng (Sách/Ảnh/Link)":
                     raw = scrape_chapter(link.strip())
                     if raw:
                         try:
-                            prompt = f"Yêu cầu: {instruction}\nThuật ngữ: {glossary}\nNội dung: {raw[:15000]}"
-                            res = model_t.generate_content(prompt)
+                            res = model_t.generate_content(f"Yêu cầu: {instruction}\nNội dung: {raw[:15000]}")
                             full += f"\n\n--- {link} ---\n{res.text}"
                         except: pass
                     bar.progress((i+1)/len(links))
-            st.download_button("Tải về (.docx)", save_docx_new(full).getvalue(), "Truyen_Web.docx")
+            st.download_button("Tải về", save_docx_new(full).getvalue(), "Truyen_Web.docx")
 
     with tab3:
-        st.info("Tải ảnh chụp sách/truyện. AI sẽ nhận diện bố cục dọc/ngang và dịch.")
-        uploaded_imgs = st.file_uploader("Tải ảnh:", accept_multiple_files=True, type=['png', 'jpg', 'jpeg'])
-        if uploaded_imgs and st.button("🚀 Dịch Ảnh"):
+        imgs = st.file_uploader("Tải ảnh:", accept_multiple_files=True, type=['png', 'jpg'])
+        if imgs and st.button("🚀 Dịch Ảnh"):
             full_trans = ""
-            model_vision = genai.GenerativeModel(selected_model_name)
-            for img_file in uploaded_imgs:
+            model_v = genai.GenerativeModel(selected_model_name)
+            for img_file in imgs:
                 img = Image.open(img_file)
-                st.image(img, width=200, caption=img_file.name)
-                
-                prompt_vision = f"""
-                Bạn là chuyên gia ngôn ngữ và Vision AI.
-                1. Nhìn vào ảnh, nhận diện bố cục (dọc/ngang) và chữ viết.
-                2. Dịch sang Tiếng Việt.
-                3. YÊU CẦU ĐẶC BIỆT: {instruction}
-                4. THUẬT NGỮ: {glossary}
-                """
+                st.image(img, width=200)
                 try:
-                    res = model_vision.generate_content([prompt_vision, img])
-                    full_trans += f"\n\n--- Ảnh {img_file.name} ---\n{res.text}"
-                except Exception as e:
-                    full_trans += f"\n[Lỗi ảnh {img_file.name}: {e}]"
-            
-            st.text_area("Kết quả:", full_trans, height=300)
-            st.download_button("📥 Tải bản dịch Ảnh (.docx)", save_docx_new(full_trans).getvalue(), "Dich_Anh.docx")
+                    res = model_v.generate_content([f"Dịch sang TV. Yêu cầu: {instruction}", img])
+                    full_trans += f"\n\n--- {img_file.name} ---\n{res.text}"
+                except: pass
+            st.text_area("Kết quả:", full_trans)
+            st.download_button("Tải về", save_docx_new(full_trans).getvalue(), "Dich_Anh.docx")
