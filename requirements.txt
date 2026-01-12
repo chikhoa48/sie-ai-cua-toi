@@ -1,10 +1,10 @@
 streamlit
 google-generativeai>=0.7.0
-langchain
-langchain-community
-langchain-core
-langchain-text-splitters
-langchain-google-genai
+langchain==0.2.14
+langchain-community==0.2.12
+langchain-core==0.2.33
+langchain-google-genai==1.0.7
+langchain-text-splitters==0.2.2
 faiss-cpu
 PyPDF2
 python-docx
