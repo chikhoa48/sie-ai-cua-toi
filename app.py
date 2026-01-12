@@ -1,5 +1,10 @@
 import streamlit as st
 import google.generativeai as genai
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain.chains.question_answering import load_qa_chain
+from langchain.prompts import PromptTemplate
 from PyPDF2 import PdfReader
 from docx import Document
 from PIL import Image
@@ -7,195 +12,221 @@ import io
 import requests
 from bs4 import BeautifulSoup
 import time
+import zipfile
+import os
 
-# --- CẤU HÌNH TRANG WEB ---
-st.set_page_config(page_title="Siêu AI Đa Năng (All-in-One)", page_icon="🤖", layout="wide")
-
-st.markdown("""
-<style>
-    .stButton>button {background-color: #2e86de; color: white;}
-    .main {background-color: #f1f2f6;}
-</style>
-""", unsafe_allow_html=True)
-
-st.title("🤖 Siêu AI: Marketing - Tài Chính - Dịch Thuật")
+# --- CẤU HÌNH ---
+st.set_page_config(page_title="Ultimate AI Final", page_icon="☯️", layout="wide")
+st.markdown("""<style>.stButton>button {background-color: #d35400; color: white;}</style>""", unsafe_allow_html=True)
 
 # --- KẾT NỐI API ---
 try:
     api_key = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    os.environ["GOOGLE_API_KEY"] = api_key
 except:
-    st.error("⚠️ Chưa nhập API Key. Hãy vào Settings -> Secrets để nhập nhé.")
+    st.error("⚠️ Chưa nhập API Key trong Secrets.")
     st.stop()
 
-# --- CÁC HÀM XỬ LÝ (FUNCTION) ---
-def get_pdf_text(file):
-    reader = PdfReader(file)
+# --- CÁC HÀM XỬ LÝ (GIỮ NGUYÊN) ---
+def get_text_from_files(files):
     text = ""
-    for page in reader.pages: text += page.extract_text() or ""
+    for f in files:
+        if f.name.endswith('.pdf'):
+            reader = PdfReader(f)
+            for page in reader.pages: text += page.extract_text() or ""
+        elif f.name.endswith('.docx'):
+            doc = Document(f)
+            for para in doc.paragraphs: text += para.text + "\n"
+        elif f.name.endswith('.txt'):
+            text += f.getvalue().decode("utf-8")
     return text
 
-def get_docx_text(file):
-    doc = Document(file)
-    text = ""
-    for para in doc.paragraphs: text += para.text + "\n"
-    return text
+def get_text_chunks(text):
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=5000, chunk_overlap=500)
+    chunks = text_splitter.split_text(text)
+    return chunks
 
-def get_csv_txt_text(file):
-    stringio = io.StringIO(file.getvalue().decode("utf-8"))
-    return stringio.read()
+def create_vector_store(text_chunks):
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+    vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
+    vector_store.save_local("faiss_index_huyenhoc")
+    return vector_store
 
-def extract_text_from_url(url):
+def zip_folder(folder_path, output_path):
+    with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for root, dirs, files in os.walk(folder_path):
+            for file in files:
+                zipf.write(os.path.join(root, file), os.path.relpath(os.path.join(root, file), os.path.join(folder_path, '..')))
+
+def scrape_chapter(url):
     try:
-        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(response.content, 'html.parser')
-        paragraphs = soup.find_all('p')
-        return "\n\n".join([p.get_text() for p in paragraphs])
-    except Exception as e:
-        return f"Lỗi đọc web: {e}"
+        content = "\n".join([p.get_text() for p in soup.find_all('p')])
+        if len(content) < 100: content = soup.get_text()
+        return content
+    except: return ""
 
-def save_to_docx(translated_text):
+def translate_docx_preserve_layout(file, instruction, glossary):
+    doc = Document(file)
+    model_trans = genai.GenerativeModel('gemini-1.5-flash')
+    total_paragraphs = len(doc.paragraphs)
+    bar = st.progress(0)
+    status = st.empty()
+    batch_size = 10
+    current_batch = []
+    current_indices = []
+    
+    for i, para in enumerate(doc.paragraphs):
+        text = para.text.strip()
+        if text:
+            current_batch.append(text)
+            current_indices.append(i)
+        
+        if len(current_batch) >= batch_size or (i == total_paragraphs - 1 and current_batch):
+            status.text(f"Đang dịch đoạn {i}/{total_paragraphs}...")
+            batch_text = "\n[--BREAK--]\n".join(current_batch)
+            prompt = f"VAI TRÒ: Biên dịch viên.\nNHIỆM VỤ: Dịch sang Tiếng Việt.\nYÊU CẦU: {instruction}\nTHUẬT NGỮ: {glossary}\nLƯU Ý: Giữ nguyên số lượng đoạn, phân cách bởi [--BREAK--].\n\nVĂN BẢN GỐC:\n{batch_text}"
+            try:
+                response = model_trans.generate_content(prompt)
+                translated_batch = response.text.split("[--BREAK--]")
+                for idx, trans_text in zip(current_indices, translated_batch):
+                    if idx < len(doc.paragraphs):
+                        doc.paragraphs[idx].text = trans_text.strip()
+            except: pass
+            current_batch = []
+            current_indices = []
+            bar.progress((i+1)/total_paragraphs)
+            time.sleep(1)
+
+    status.text("✅ Đã dịch xong! Ảnh và Bảng biểu được giữ nguyên.")
+    bio = io.BytesIO()
+    doc.save(bio)
+    return bio
+
+def save_docx_new(content):
     doc = Document()
-    doc.add_heading('Bản Dịch Bởi AI', 0)
-    for line in translated_text.split('\n'):
+    for line in content.split('\n'):
         if line.strip(): doc.add_paragraph(line)
     bio = io.BytesIO()
     doc.save(bio)
     return bio
 
-# --- SIDEBAR: MENU CHỨC NĂNG ---
-with st.sidebar:
-    st.header("🎛️ MENU CHỨC NĂNG")
+# --- GIAO DIỆN CHÍNH ---
+st.title("☯️ Ultimate AI: Đại Sư & Dịch Giả")
+
+menu = st.sidebar.radio("CHỨC NĂNG:", [
+    "1. Huấn Luyện & Lưu Trữ (Train Brain)",
+    "2. Hỏi Đại Sư (Dùng Bộ Não)",
+    "3. Dịch Thuật Đa Năng (Sách/Ảnh/Link)"
+])
+
+# --- MODULE 1: HUẤN LUYỆN ---
+if menu == "1. Huấn Luyện & Lưu Trữ (Train Brain)":
+    st.header("🧠 Huấn Luyện AI")
+    st.info("Nạp sách Giang Công, Phong Thủy (PDF/Docx) để tạo 'Bộ Não'.")
+    uploaded_files = st.file_uploader("Nạp sách:", accept_multiple_files=True)
+    if st.button("Train & Tải Bộ Não"):
+        if uploaded_files:
+            with st.spinner("Đang học..."):
+                raw = get_text_from_files(uploaded_files)
+                create_vector_store(get_text_chunks(raw))
+                zip_folder("faiss_index_huyenhoc", "bo_nao.zip")
+                with open("bo_nao.zip", "rb") as fp:
+                    st.download_button("📥 Tải Bộ Não Về", fp, "bo_nao.zip", "application/zip")
+
+# --- MODULE 2: HỎI ĐÁP ---
+elif menu == "2. Hỏi Đại Sư (Dùng Bộ Não)":
+    st.header("🔮 Hỏi Đáp RAG")
+    brain = st.sidebar.file_uploader("Nạp file 'bo_nao.zip':", type="zip")
+    vs = None
+    if brain:
+        with open("temp.zip", "wb") as f: f.write(brain.getbuffer())
+        with zipfile.ZipFile("temp.zip", "r") as z: z.extractall(".")
+        vs = FAISS.load_local("faiss_index_huyenhoc", GoogleGenerativeAIEmbeddings(model="models/embedding-001"), allow_dangerous_deserialization=True)
+        st.sidebar.success("Đã nạp não!")
     
-    # CHỌN CHẾ ĐỘ
-    app_mode = st.radio(
-        "Bạn muốn dùng tính năng gì?",
-        [
-            "1. Chat & Phân Tích (Marketing/Tài Chính)", 
-            "2. Dịch Sách & Truyện (Batch/URL)", 
-            "3. Dịch Ảnh (OCR)"
-        ]
-    )
-    st.divider()
-
-# --- KHU VỰC 1: CHAT & PHÂN TÍCH (MARKETING, TÀI CHÍNH, PHONG THỦY) ---
-if app_mode == "1. Chat & Phân Tích (Marketing/Tài Chính)":
-    st.subheader("💬 Trợ Lý Chuyên Gia & Phân Tích Dữ Liệu")
+    if "msgs" not in st.session_state: st.session_state.msgs = []
+    for m in st.session_state.msgs: st.chat_message(m["role"]).markdown(m["content"])
     
-    # Cấu hình bên trái
-    with st.sidebar:
-        role = st.selectbox("Chọn vai trò AI:", [
-            "Chuyên Gia Marketing (Content/Insight)", 
-            "Chuyên Gia Tài Chính (ROI/Đầu tư)",
-            "Thầy Phong Thủy (Giang Công)",
-            "Trợ Lý Bình Thường"
-        ])
-        
-        uploaded_files = st.file_uploader("Nạp dữ liệu (PDF, Word, CSV, TXT):", accept_multiple_files=True)
-        if st.button("🔄 Nạp dữ liệu"):
-            with st.spinner("Đang đọc..."):
-                raw = ""
-                for f in uploaded_files:
-                    if f.name.endswith('.pdf'): raw += get_pdf_text(f)
-                    elif f.name.endswith('.docx'): raw += get_docx_text(f)
-                    elif f.name.endswith('.csv') or f.name.endswith('.txt'): raw += get_csv_txt_text(f)
-                st.session_state.context_text = raw
-                st.session_state.messages = [] # Reset chat
-                st.success("Đã nạp xong!")
+    if q := st.chat_input("Hỏi gì đi..."):
+        st.session_state.msgs.append({"role": "user", "content": q})
+        st.chat_message("user").markdown(q)
+        if vs:
+            docs = vs.similarity_search(q, k=4)
+            chain = load_qa_chain(ChatGoogleGenerativeAI(model="gemini-1.5-pro"), chain_type="stuff", prompt=PromptTemplate(template="Dựa vào sách: {context}\nTrả lời: {question}", input_variables=["context", "question"]))
+            res = chain({"input_documents": docs, "question": q}, return_only_outputs=True)
+            st.session_state.msgs.append({"role": "assistant", "content": res["output_text"]})
+            st.chat_message("assistant").markdown(res["output_text"])
+        else: st.error("Chưa nạp bộ não!")
 
-    # Logic Chat
-    if "messages" not in st.session_state: st.session_state.messages = []
-    if "context_text" not in st.session_state: st.session_state.context_text = ""
-
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]): st.markdown(msg["content"])
-
-    if prompt := st.chat_input("Hỏi gì đi (Ví dụ: Viết content, Phân tích ROI...):"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"): st.markdown(prompt)
-
-        # Prompt engineering cho từng vai
-        instructions = ""
-        if "Marketing" in role: instructions = "Bạn là CMO thực chiến. Hãy viết content thu hút, phân tích insight sâu sắc, tìm nỗi đau khách hàng."
-        elif "Tài Chính" in role: instructions = "Bạn là chuyên gia tài chính CFA. Tập trung vào số liệu, ROI, dòng tiền và rủi ro."
-        elif "Phong Thủy" in role: instructions = "Bạn là thầy Phong Thủy phái Giang Công. Dùng từ ngữ trang trọng, cổ học."
-
-        full_prompt = f"{instructions}\n\nDựa vào dữ liệu: {st.session_state.context_text}\n\nCâu hỏi: {prompt}"
-        
-        try:
-            res = model.generate_content(full_prompt)
-            with st.chat_message("assistant"): st.markdown(res.text)
-            st.session_state.messages.append({"role": "assistant", "content": res.text})
-        except Exception as e: st.error(f"Lỗi chi tiết: {e}")
-
-# --- KHU VỰC 2: DỊCH SÁCH & TRUYỆN (BATCH MODE) ---
-elif app_mode == "2. Dịch Sách & Truyện (Batch/URL)":
-    st.subheader("📚 Cỗ Máy Dịch Thuật: Truyện & Sách Chuyên Ngành")
+# --- MODULE 3: DỊCH THUẬT ĐA NĂNG (ĐẦY ĐỦ 3 TAB) ---
+elif menu == "3. Dịch Thuật Đa Năng (Sách/Ảnh/Link)":
+    st.header("🏭 Dịch Thuật Công Nghiệp")
     
-    with st.sidebar:
-        st.info("Cấu hình Dịch Thuật")
-        trans_source = st.radio("Nguồn:", ["File Tài Liệu (PDF/Docx/Txt)", "Link Website"])
-        glossary = st.text_area("Từ điển thuật ngữ (Giữ nguyên từ):", "Ví dụ:\nTrúc Cơ\nROI\nInsight", height=100)
-    
-    if trans_source == "File Tài Liệu (PDF/Docx/Txt)":
-        ufile = st.file_uploader("Tải sách lên:", type=['txt', 'docx', 'pdf'])
-        if ufile and st.button("🚀 Bắt đầu Dịch File"):
-            # Đọc file
-            raw_text = ""
-            if ufile.name.endswith('.pdf'): raw_text = get_pdf_text(ufile)
-            elif ufile.name.endswith('.docx'): raw_text = get_docx_text(ufile)
-            elif ufile.name.endswith('.txt'): raw_text = get_csv_txt_text(ufile)
-            
-            # Cắt nhỏ và dịch
-            chunk_size = 3000
-            chunks = [raw_text[i:i+chunk_size] for i in range(0, len(raw_text), chunk_size)]
-            
+    col_a, col_b = st.columns(2)
+    with col_a:
+        instruction = st.text_area("Yêu cầu văn phong:", value="Dịch sang tiếng Việt. Văn phong hay, dễ hiểu. Kiểm tra lỗi chính tả bản gốc trước khi dịch.", height=100)
+    with col_b:
+        glossary = st.text_area("Từ điển (Glossary):", value="Insight\nROI\nTrúc Cơ", height=100)
+
+    # ĐÂY LÀ PHẦN QUAN TRỌNG BẠN CẦN: 3 TAB
+    tab1, tab2, tab3 = st.tabs(["📄 File Word (Giữ Ảnh)", "🌐 Link/Text", "🖼️ Dịch Ảnh (OCR)"])
+
+    # Tab 1: Dịch File Word giữ định dạng
+    with tab1:
+        st.info("Nạp file Word (.docx). AI sẽ dịch chữ và GIỮ NGUYÊN hình ảnh/bảng biểu.")
+        docx_file = st.file_uploader("Tải file Word:", type=['docx'])
+        if docx_file and st.button("🚀 Dịch File Word"):
+            processed_file = translate_docx_preserve_layout(docx_file, instruction, glossary)
+            st.download_button(f"📥 Tải về {docx_file.name}", processed_file.getvalue(), f"VN_{docx_file.name}", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+    # Tab 2: Dịch Link hoặc Text
+    with tab2:
+        st.info("Dán Link truyện hoặc Text. AI sẽ dịch và tạo file Word mới.")
+        urls = st.text_area("Dán Link (Mỗi dòng 1 link):")
+        if st.button("🚀 Dịch Link"):
+            links = urls.split('\n')
+            full = ""
+            bar = st.progress(0)
+            model_t = genai.GenerativeModel('gemini-1.5-flash')
+            for i, link in enumerate(links):
+                if link.strip():
+                    raw = scrape_chapter(link.strip())
+                    if raw:
+                        try:
+                            prompt = f"Yêu cầu: {instruction}\nThuật ngữ: {glossary}\nNội dung: {raw[:15000]}"
+                            res = model_t.generate_content(prompt)
+                            full += f"\n\n--- {link} ---\n{res.text}"
+                        except: pass
+                    bar.progress((i+1)/len(links))
+            st.download_button("Tải về (.docx)", save_docx_new(full).getvalue(), "Truyen_Web.docx")
+
+    # Tab 3: Dịch Ảnh (OCR) - ĐÃ THÊM LẠI
+    with tab3:
+        st.info("Tải ảnh chụp sách/truyện (Tiếng Trung/Anh). AI sẽ nhận diện và dịch.")
+        uploaded_imgs = st.file_uploader("Tải ảnh:", accept_multiple_files=True, type=['png', 'jpg', 'jpeg'])
+        if uploaded_imgs and st.button("🚀 Dịch Ảnh"):
             full_trans = ""
-            my_bar = st.progress(0)
-            status = st.empty()
-            
-            for i, chunk in enumerate(chunks):
-                status.text(f"Đang dịch phần {i+1}/{len(chunks)}...")
-                p = f"Dịch đoạn sau sang Tiếng Việt. Văn phong trôi chảy. Thuật ngữ bắt buộc giữ: {glossary}\n\nNội dung:\n{chunk}"
+            model_vision = genai.GenerativeModel('gemini-1.5-flash')
+            for img_file in uploaded_imgs:
+                img = Image.open(img_file)
+                st.image(img, width=200, caption=img_file.name)
+                
+                prompt_vision = f"""
+                Bạn là chuyên gia ngôn ngữ.
+                1. Nhìn vào ảnh, nhận diện toàn bộ văn bản (kể cả Tiếng Trung phồn/giản, Tiếng Anh).
+                2. Dịch sang Tiếng Việt.
+                3. YÊU CẦU: {instruction}
+                4. THUẬT NGỮ: {glossary}
+                """
                 try:
-                    r = model.generate_content(p)
-                    full_trans += r.text + "\n\n"
-                    my_bar.progress((i+1)/len(chunks))
-                    time.sleep(1)
-                except: full_trans += f"[Lỗi đoạn {i+1}]"
+                    res = model_vision.generate_content([prompt_vision, img])
+                    full_trans += f"\n\n--- Ảnh {img_file.name} ---\n{res.text}"
+                except Exception as e:
+                    full_trans += f"\n[Lỗi ảnh {img_file.name}: {e}]"
             
-            status.text("✅ Xong!")
-            st.text_area("Kết quả:", full_trans, height=200)
-            
-            # Tải về
-            docx = save_to_docx(full_trans)
-            st.download_button("📥 Tải bản dịch (.docx)", docx.getvalue(), "Ban_dich.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-
-    else: # Dịch Link Web
-        url = st.text_input("Dán Link chương truyện:")
-        if url and st.button("🚀 Dịch Chương Này"):
-            with st.spinner("Đang cào và dịch..."):
-                content = extract_text_from_url(url)
-                if len(content) > 50:
-                    p = f"Dịch truyện sau sang Tiếng Việt. Văn phong cuốn hút. Thuật ngữ giữ nguyên: {glossary}\n\nNội dung:\n{content[:15000]}"
-                    res = model.generate_content(p)
-                    st.markdown(res.text)
-                    docx = save_to_docx(res.text)
-                    st.download_button("📥 Tải về (.docx)", docx.getvalue(), "Chuong_truyen.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-                else: st.error("Không đọc được web này.")
-
-# --- KHU VỰC 3: DỊCH ẢNH (OCR) ---
-elif app_mode == "3. Dịch Ảnh (OCR)":
-    st.subheader("🌏 Dịch Thuật Hình Ảnh (Anh/Hoa -> Việt)")
-    img = st.file_uploader("Tải ảnh lên:", type=["jpg", "png"])
-    
-    if img:
-        image = Image.open(img)
-        st.image(image, caption="Ảnh gốc", width=400)
-        if st.button("🚀 Dịch Ngay"):
-            with st.spinner("AI đang nhìn và dịch..."):
-                p = "Dịch toàn bộ chữ trong ảnh sang Tiếng Việt. Văn phong tự nhiên. Nếu là sách chuyên ngành hãy giữ thuật ngữ."
-                res = model.generate_content([p, image])
-                st.markdown("### Kết quả:")
-                st.write(res.text)
+            st.text_area("Kết quả:", full_trans, height=300)
+            st.download_button("📥 Tải bản dịch Ảnh (.docx)", save_docx_new(full_trans).getvalue(), "Dich_Anh.docx")
