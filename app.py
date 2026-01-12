@@ -16,19 +16,33 @@ import zipfile
 import os
 
 # --- CẤU HÌNH ---
-st.set_page_config(page_title="Ultimate AI Final", page_icon="☯️", layout="wide")
-st.markdown("""<style>.stButton>button {background-color: #d35400; color: white;}</style>""", unsafe_allow_html=True)
+st.set_page_config(page_title="Ultimate AI: God Mode", page_icon="☯️", layout="wide")
+st.markdown("""<style>.stButton>button {background-color: #8e44ad; color: white;}</style>""", unsafe_allow_html=True)
 
-# --- KẾT NỐI API ---
+# --- KẾT NỐI API & TỰ ĐỘNG QUÉT MODEL ---
 try:
     api_key = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=api_key)
     os.environ["GOOGLE_API_KEY"] = api_key
+    
+    # TỰ ĐỘNG QUÉT MODEL (Logic cập nhật mới nhất)
+    available_models = []
+    try:
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods and 'gemini' in m.name:
+                available_models.append(m.name)
+    except: pass
+    
+    # Danh sách dự phòng nếu quét lỗi
+    if not available_models:
+        available_models = ["models/gemini-1.5-pro", "models/gemini-1.5-flash", "models/gemini-pro"]
+        
 except:
     st.error("⚠️ Chưa nhập API Key trong Secrets.")
     st.stop()
 
-# --- CÁC HÀM XỬ LÝ (GIỮ NGUYÊN) ---
+# --- CÁC HÀM XỬ LÝ ---
+
 def get_text_from_files(files):
     text = ""
     for f in files:
@@ -69,9 +83,12 @@ def scrape_chapter(url):
         return content
     except: return ""
 
-def translate_docx_preserve_layout(file, instruction, glossary):
+# Hàm dịch giữ định dạng (Đã cập nhật để nhận model động)
+def translate_docx_preserve_layout(file, instruction, glossary, model_name):
     doc = Document(file)
-    model_trans = genai.GenerativeModel('gemini-1.5-flash')
+    # Sử dụng model người dùng chọn
+    model_trans = genai.GenerativeModel(model_name)
+    
     total_paragraphs = len(doc.paragraphs)
     bar = st.progress(0)
     status = st.empty()
@@ -115,13 +132,28 @@ def save_docx_new(content):
     return bio
 
 # --- GIAO DIỆN CHÍNH ---
-st.title("☯️ Ultimate AI: Đại Sư & Dịch Giả")
+st.title("☯️ Ultimate AI: God Mode")
 
-menu = st.sidebar.radio("CHỨC NĂNG:", [
-    "1. Huấn Luyện & Lưu Trữ (Train Brain)",
-    "2. Hỏi Đại Sư (Dùng Bộ Não)",
-    "3. Dịch Thuật Đa Năng (Sách/Ảnh/Link)"
-])
+# --- SIDEBAR: CẤU HÌNH ---
+with st.sidebar:
+    st.header("⚙️ TRUNG TÂM ĐIỀU KHIỂN")
+    
+    # 1. CHỌN PHIÊN BẢN GEMINI (CẬP NHẬT MỚI)
+    selected_model_name = st.selectbox(
+        "Chọn Bộ Não (Model):",
+        available_models,
+        index=0,
+        help="Chọn model mới nhất (VD: gemini-3.0...) để thông minh hơn."
+    )
+    st.success(f"Đang dùng: {selected_model_name}")
+    
+    st.divider()
+    
+    menu = st.radio("CHỨC NĂNG:", [
+        "1. Huấn Luyện & Lưu Trữ (Train Brain)",
+        "2. Hỏi Đại Sư (Dùng Bộ Não)",
+        "3. Dịch Thuật Đa Năng (Sách/Ảnh/Link)"
+    ])
 
 # --- MODULE 1: HUẤN LUYỆN ---
 if menu == "1. Huấn Luyện & Lưu Trữ (Train Brain)":
@@ -139,7 +171,7 @@ if menu == "1. Huấn Luyện & Lưu Trữ (Train Brain)":
 
 # --- MODULE 2: HỎI ĐÁP ---
 elif menu == "2. Hỏi Đại Sư (Dùng Bộ Não)":
-    st.header("🔮 Hỏi Đáp RAG")
+    st.header(f"🔮 Hỏi Đáp RAG (Model: {selected_model_name})")
     brain = st.sidebar.file_uploader("Nạp file 'bo_nao.zip':", type="zip")
     vs = None
     if brain:
@@ -156,34 +188,35 @@ elif menu == "2. Hỏi Đại Sư (Dùng Bộ Não)":
         st.chat_message("user").markdown(q)
         if vs:
             docs = vs.similarity_search(q, k=4)
-            chain = load_qa_chain(ChatGoogleGenerativeAI(model="gemini-1.5-pro"), chain_type="stuff", prompt=PromptTemplate(template="Dựa vào sách: {context}\nTrả lời: {question}", input_variables=["context", "question"]))
+            # Cập nhật: Dùng Model người dùng chọn
+            chain = load_qa_chain(ChatGoogleGenerativeAI(model=selected_model_name), chain_type="stuff", prompt=PromptTemplate(template="Dựa vào sách: {context}\nTrả lời: {question}", input_variables=["context", "question"]))
             res = chain({"input_documents": docs, "question": q}, return_only_outputs=True)
             st.session_state.msgs.append({"role": "assistant", "content": res["output_text"]})
             st.chat_message("assistant").markdown(res["output_text"])
         else: st.error("Chưa nạp bộ não!")
 
-# --- MODULE 3: DỊCH THUẬT ĐA NĂNG (ĐẦY ĐỦ 3 TAB) ---
+# --- MODULE 3: DỊCH THUẬT ĐA NĂNG ---
 elif menu == "3. Dịch Thuật Đa Năng (Sách/Ảnh/Link)":
-    st.header("🏭 Dịch Thuật Công Nghiệp")
+    st.header(f"🏭 Dịch Thuật (Động cơ: {selected_model_name})")
     
     col_a, col_b = st.columns(2)
     with col_a:
-        instruction = st.text_area("Yêu cầu văn phong:", value="Dịch sang tiếng Việt. Văn phong hay, dễ hiểu. Kiểm tra lỗi chính tả bản gốc trước khi dịch.", height=100)
+        instruction = st.text_area("Yêu cầu văn phong:", value="Dịch sang tiếng Việt. Sách cổ chữ dọc đọc từ phải sang trái. Văn phong hay.", height=100)
     with col_b:
         glossary = st.text_area("Từ điển (Glossary):", value="Insight\nROI\nTrúc Cơ", height=100)
 
-    # ĐÂY LÀ PHẦN QUAN TRỌNG BẠN CẦN: 3 TAB
     tab1, tab2, tab3 = st.tabs(["📄 File Word (Giữ Ảnh)", "🌐 Link/Text", "🖼️ Dịch Ảnh (OCR)"])
 
-    # Tab 1: Dịch File Word giữ định dạng
+    # Tab 1: Dịch File Word giữ định dạng (Dùng model động)
     with tab1:
         st.info("Nạp file Word (.docx). AI sẽ dịch chữ và GIỮ NGUYÊN hình ảnh/bảng biểu.")
         docx_file = st.file_uploader("Tải file Word:", type=['docx'])
         if docx_file and st.button("🚀 Dịch File Word"):
-            processed_file = translate_docx_preserve_layout(docx_file, instruction, glossary)
+            # Truyền tên model vào hàm
+            processed_file = translate_docx_preserve_layout(docx_file, instruction, glossary, selected_model_name)
             st.download_button(f"📥 Tải về {docx_file.name}", processed_file.getvalue(), f"VN_{docx_file.name}", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
-    # Tab 2: Dịch Link hoặc Text
+    # Tab 2: Dịch Link hoặc Text (Dùng model động)
     with tab2:
         st.info("Dán Link truyện hoặc Text. AI sẽ dịch và tạo file Word mới.")
         urls = st.text_area("Dán Link (Mỗi dòng 1 link):")
@@ -191,7 +224,7 @@ elif menu == "3. Dịch Thuật Đa Năng (Sách/Ảnh/Link)":
             links = urls.split('\n')
             full = ""
             bar = st.progress(0)
-            model_t = genai.GenerativeModel('gemini-1.5-flash')
+            model_t = genai.GenerativeModel(selected_model_name) # Cập nhật model
             for i, link in enumerate(links):
                 if link.strip():
                     raw = scrape_chapter(link.strip())
@@ -204,22 +237,22 @@ elif menu == "3. Dịch Thuật Đa Năng (Sách/Ảnh/Link)":
                     bar.progress((i+1)/len(links))
             st.download_button("Tải về (.docx)", save_docx_new(full).getvalue(), "Truyen_Web.docx")
 
-    # Tab 3: Dịch Ảnh (OCR) - ĐÃ THÊM LẠI
+    # Tab 3: Dịch Ảnh OCR (Dùng model động)
     with tab3:
-        st.info("Tải ảnh chụp sách/truyện (Tiếng Trung/Anh). AI sẽ nhận diện và dịch.")
+        st.info("Tải ảnh chụp sách/truyện. AI sẽ nhận diện bố cục dọc/ngang và dịch.")
         uploaded_imgs = st.file_uploader("Tải ảnh:", accept_multiple_files=True, type=['png', 'jpg', 'jpeg'])
         if uploaded_imgs and st.button("🚀 Dịch Ảnh"):
             full_trans = ""
-            model_vision = genai.GenerativeModel('gemini-1.5-flash')
+            model_vision = genai.GenerativeModel(selected_model_name) # Cập nhật model
             for img_file in uploaded_imgs:
                 img = Image.open(img_file)
                 st.image(img, width=200, caption=img_file.name)
                 
                 prompt_vision = f"""
-                Bạn là chuyên gia ngôn ngữ.
-                1. Nhìn vào ảnh, nhận diện toàn bộ văn bản (kể cả Tiếng Trung phồn/giản, Tiếng Anh).
+                Bạn là chuyên gia ngôn ngữ và Vision AI.
+                1. Nhìn vào ảnh, nhận diện bố cục (dọc/ngang) và chữ viết.
                 2. Dịch sang Tiếng Việt.
-                3. YÊU CẦU: {instruction}
+                3. YÊU CẦU ĐẶC BIỆT: {instruction}
                 4. THUẬT NGỮ: {glossary}
                 """
                 try:
