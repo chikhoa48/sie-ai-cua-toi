@@ -127,7 +127,7 @@ if app_mode == "1. Chat & Phân Tích (Marketing/Tài Chính)":
             res = model.generate_content(full_prompt)
             with st.chat_message("assistant"): st.markdown(res.text)
             st.session_state.messages.append({"role": "assistant", "content": res.text})
-        except: st.error("Lỗi xử lý.")
+        except Exception as e: st.error(f"Lỗi chi tiết: {e}")
 
 # --- KHU VỰC 2: DỊCH SÁCH & TRUYỆN (BATCH MODE) ---
 elif app_mode == "2. Dịch Sách & Truyện (Batch/URL)":
