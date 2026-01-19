@@ -157,7 +157,7 @@ elif menu == "🏭 Dịch Thuật Công Nghiệp":
                         continue
                     # ---------------------------------------
 
-                    chunks = [txt[i:i+4000] for i in range(0, len(txt), 4000)] # Giảm xuống 4000 cho an toàn
+                    chunks = [txt[i:i+20000] for i in range(0, len(txt), 20000)] # Giảm xuống 4000 cho an toàn
                     full_trans = ""
                     p_bar = st.progress(0)
                     
