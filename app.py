@@ -126,7 +126,24 @@ elif menu == "🏭 Dịch Thuật Công Nghiệp":
                 full_trans = ""
                 p_bar = st.progress(0)
                 for i, c in enumerate(chunks):
-                    res = model.generate_content(f"YÊU CẦU: {instr}\nTHUẬT NGỮ: {gloss}\nDỊCH ĐOẠN NÀY: {c}", safety_settings=safety_settings)
+                   # --- BẮT ĐẦU ĐOẠN CODE TỰ ĐỘNG THỬ LẠI ---
+import time
+
+# Thử tối đa 3 lần nếu bị lỗi
+for attempt in range(3):
+    try:
+        # Cố gắng gọi AI
+        res = model.generate_content(f"YÊU CẦU: {instr}\nTHUẬT NGỮ: {gloss}\nDỊCH ĐOẠN NÀY: {c}", safety_settings=safety_settings)
+        break # Nếu thành công (không lỗi) thì thoát vòng lặp ngay
+    except Exception as e:
+        # Nếu gặp lỗi (bất kể lỗi gì)
+        if "ResourceExhausted" in str(e):
+            # Nếu là lỗi quá tải, nghỉ 20 giây rồi thử lại
+            time.sleep(20) 
+        else:
+            # Nếu là lỗi khác thì bỏ qua luôn
+            break
+# --- KẾT THÚC ĐOẠN CODE ---
                     full_trans += res.text + "\n\n"
                     p_bar.progress((i+1)/len(chunks))
                 st.download_button(f"Tải bản dịch {f.name}", save_docx(full_trans).getvalue(), f"VN_{f.name}.docx")
