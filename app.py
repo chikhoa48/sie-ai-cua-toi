@@ -1,6 +1,17 @@
 import streamlit as st
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import google.generativeai as genai
 import os, io, requests, time
+# --- Dán đoạn này ngay sau các dòng import ở đầu file ---
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
+
+safety_settings = {
+    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+}
+# --------------------------------------------------------
 from PIL import Image
 from PyPDF2 import PdfReader
 from docx import Document
@@ -93,7 +104,7 @@ if menu == "🔮 Hỏi Đáp Chuyên Sâu (Huyền học/Data)":
         
         with st.spinner("AI đang suy nghĩ..."):
             try:
-                res = model.generate_content(prompt)
+                res = model.generate_content(prompt, safety_settings=safety_settings)
                 st.chat_message("assistant").markdown(res.text)
                 st.session_state.chat_history.append({"role": "assistant", "content": res.text})
             except Exception as e: st.error(f"Lỗi: {e}")
@@ -115,7 +126,7 @@ elif menu == "🏭 Dịch Thuật Công Nghiệp":
                 full_trans = ""
                 p_bar = st.progress(0)
                 for i, c in enumerate(chunks):
-                    res = model.generate_content(f"YÊU CẦU: {instr}\nTHUẬT NGỮ: {gloss}\nDỊCH ĐOẠN NÀY: {c}")
+                    res = model.generate_content(f"YÊU CẦU: {instr}\nTHUẬT NGỮ: {gloss}\nDỊCH ĐOẠN NÀY: {c}", safety_settings=safety_settings)
                     full_trans += res.text + "\n\n"
                     p_bar.progress((i+1)/len(chunks))
                 st.download_button(f"Tải bản dịch {f.name}", save_docx(full_trans).getvalue(), f"VN_{f.name}.docx")
@@ -128,7 +139,7 @@ elif menu == "🏭 Dịch Thuật Công Nghiệp":
             for l in links:
                 if l.strip():
                     raw = scrape_url(l.strip())
-                    res = model.generate_content(f"Dịch nội dung sau: {raw[:15000]}")
+                    res = model.generate_content(f"Dịch nội dung sau: {raw[:15000]}", safety_settings=safety_settings)
                     all_txt += f"\n--- {l} ---\n" + res.text
             st.download_button("Tải file dịch tổng hợp", save_docx(all_txt).getvalue(), "Dich_Web.docx")
 
@@ -141,7 +152,7 @@ elif menu == "🖼️ Dịch Ảnh (OCR)":
         for im_f in imgs:
             img = Image.open(im_f)
             st.image(img, width=300)
-            res = model.generate_content(["Nhận diện chữ trong ảnh (kể cả tiếng Trung dọc) và dịch sang Tiếng Việt:", img])
+            res = model.generate_content(["Nhận diện chữ trong ảnh (kể cả tiếng Trung dọc) và dịch sang Tiếng Việt:", img], safety_settings=safety_settings)
             full_ocr += f"\n--- {im_f.name} ---\n" + res.text
         st.text_area("Kết quả:", full_ocr, height=300)
         st.download_button("Tải file dịch ảnh (.docx)", save_docx(full_ocr).getvalue(), "Dich_Anh.docx")
