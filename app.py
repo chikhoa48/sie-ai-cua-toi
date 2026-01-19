@@ -143,7 +143,14 @@ elif menu == "🏭 Dịch Thuật Công Nghiệp":
                                 # Nếu là lỗi khác thì bỏ qua luôn
                                 break
                     # --- KẾT THÚC ĐOẠN CODE ---
-                    full_trans += res.text + "\n\n"
+                   # --- SỬA DÒNG 146 ---
+# Chỉ cộng chuỗi khi 'res' thực sự tồn tại và có nội dung
+if res and res.text:
+    full_trans += res.text + "\n\n"
+else:
+    # Nếu res không có (do lỗi), thì ghi chú vào file để không bị sập
+    full_trans += "[Đoạn này bị lỗi, không lấy được nội dung]\n\n"
+# --------------------
                     p_bar.progress((i+1)/len(chunks))
                 st.download_button(f"Tải bản dịch {f.name}", save_docx(full_trans).getvalue(), f"VN_{f.name}.docx")
 
