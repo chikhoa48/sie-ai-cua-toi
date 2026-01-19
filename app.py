@@ -1,3 +1,4 @@
+import time
 import streamlit as st
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import google.generativeai as genai
@@ -127,8 +128,6 @@ elif menu == "🏭 Dịch Thuật Công Nghiệp":
                 p_bar = st.progress(0)
                 for i, c in enumerate(chunks):
                    # --- BẮT ĐẦU ĐOẠN CODE TỰ ĐỘNG THỬ LẠI ---
-import time
-
 # Thử tối đa 3 lần nếu bị lỗi
 for attempt in range(3):
     try:
