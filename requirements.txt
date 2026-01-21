@@ -1,8 +1,8 @@
 streamlit
 google-generativeai
-PyPDF2
 python-docx
-Pillow
 beautifulsoup4
+Pillow
 requests
-pip install pymupdf
+PyPDF2
+pymupdf
