@@ -5,3 +5,4 @@ python-docx
 Pillow
 beautifulsoup4
 requests
+pip install pymupdf
