@@ -3,15 +3,17 @@ import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import os, io, requests, time
 from PIL import Image
-from PyPDF2 import PdfReader
+# Thay PyPDF2 bằng PyMuPDF (fitz) để xử lý ảnh tốt hơn
+import fitz  
 from docx import Document
+from docx.shared import Inches
 from bs4 import BeautifulSoup
 
 # --- CẤU HÌNH TRANG ---
-st.set_page_config(page_title="Siêu AI Đa Năng", page_icon="🚀", layout="wide")
-st.markdown("""<style>.stButton>button {background-color: #d35400; color: white;}</style>""", unsafe_allow_html=True)
+st.set_page_config(page_title="Siêu AI Hán Nôm & Dịch Thuật", page_icon="☯️", layout="wide")
+st.markdown("""<style>.stButton>button {background-color: #8e44ad; color: white;}</style>""", unsafe_allow_html=True)
 
-# --- CẤU HÌNH AN TOÀN (MỞ TOANG ĐỂ KHÔNG BỊ CHẶN) ---
+# --- CẤU HÌNH AN TOÀN ---
 safety_settings = {
     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -23,48 +25,84 @@ safety_settings = {
 try:
     api_key = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=api_key)
-    
-    # Tự động lấy danh sách Model
-    available_models = []
-    try:
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods and 'gemini' in m.name:
-                available_models.append(m.name)
-    except: pass
-    
-    # Ưu tiên Flash vì nó nhanh và ít bị lỗi hạn mức hơn Pro
-    if not available_models: 
-        available_models = ["models/gemini-1.5-flash", "models/gemini-1.5-pro"]
-    else:
-        # Đảo Flash lên đầu danh sách
-        available_models.sort(key=lambda x: "flash" not in x)
+    # Ưu tiên Flash 1.5 cho tốc độ và Pro 1.5 cho độ chính xác Hán Nôm
+    available_models = ["models/gemini-1.5-pro", "models/gemini-1.5-flash"]
 except:
     st.error("⚠️ Chưa nhập API Key trong Secrets.")
     st.stop()
 
-# --- CÁC HÀM XỬ LÝ FILE ---
-def get_text_from_files(files):
-    text = ""
-    for f in files:
-        try:
-            if f.name.endswith('.pdf'):
-                reader = PdfReader(f)
-                for page in reader.pages: 
-                    extracted = page.extract_text()
-                    if extracted: text += extracted
-            elif f.name.endswith('.docx'):
-                doc = Document(f)
-                for para in doc.paragraphs: text += para.text + "\n"
-            elif f.name.endswith('.txt'):
-                text += f.getvalue().decode("utf-8")
-        except Exception as e:
-            st.error(f"Lỗi đọc file {f.name}: {e}")
-    return text
+# --- CÁC HÀM XỬ LÝ CỐT LÕI ---
 
-def save_docx(content):
+def extract_content_from_pdf(uploaded_file):
+    """
+    Hàm này đọc PDF và tách riêng:
+    1. Văn bản (Text)
+    2. Hình ảnh (Images)
+    Trả về một danh sách các 'Block' để giữ đúng thứ tự trang.
+    """
+    doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+    content_blocks = [] # Chứa {type: 'text'/'image', content: ...}
+
+    for page_num, page in enumerate(doc):
+        # 1. Lấy văn bản của trang
+        text = page.get_text()
+        if text.strip():
+            content_blocks.append({
+                "type": "text", 
+                "page": page_num + 1, 
+                "content": text
+            })
+
+        # 2. Lấy hình ảnh của trang
+        image_list = page.get_images(full=True)
+        for img_index, img in enumerate(image_list):
+            xref = img[0]
+            base_image = doc.extract_image(xref)
+            image_bytes = base_image["image"]
+            
+            # Lọc bỏ ảnh quá nhỏ (logo, icon, đường kẻ) - Dưới 5KB bỏ qua
+            if len(image_bytes) > 5120: 
+                image_pil = Image.open(io.BytesIO(image_bytes))
+                content_blocks.append({
+                    "type": "image",
+                    "page": page_num + 1,
+                    "content": image_pil,
+                    "name": f"Trang_{page_num+1}_Anh_{img_index+1}"
+                })
+    return content_blocks
+
+def save_docx_mixed(blocks, translation_results):
+    """
+    Tạo file Word chứa cả Ảnh và Văn bản đã dịch
+    """
     doc = Document()
-    for line in content.split('\n'):
-        if line.strip(): doc.add_paragraph(line)
+    doc.add_heading('BẢN DỊCH TÀI LIỆU', 0)
+
+    for i, block in enumerate(blocks):
+        # Nếu là Text
+        if block['type'] == 'text':
+            # Tìm bản dịch tương ứng trong results (dựa vào index)
+            if i < len(translation_results) and translation_results[i]:
+                doc.add_paragraph(translation_results[i])
+                doc.add_paragraph("-" * 20) # Đường kẻ phân cách
+        
+        # Nếu là Image
+        elif block['type'] == 'image':
+            img_pil = block['content']
+            
+            # 1. Chèn ảnh gốc vào Word
+            img_byte_arr = io.BytesIO()
+            img_pil.save(img_byte_arr, format=img_pil.format if img_pil.format else 'PNG')
+            doc.add_picture(img_byte_arr, width=Inches(4.0)) # Chèn ảnh rộng 4 inch
+            
+            # 2. Chèn bản dịch nội dung trong ảnh ngay bên dưới
+            if i < len(translation_results) and translation_results[i]:
+                p = doc.add_paragraph()
+                runner = p.add_run(f"\n[DỊCH ẢNH TRÊN]:\n{translation_results[i]}")
+                runner.bold = True
+                runner.italic = True
+                doc.add_paragraph("-" * 20)
+
     bio = io.BytesIO()
     doc.save(bio)
     return bio
@@ -78,175 +116,154 @@ def scrape_url(url):
     except: return ""
 
 # --- GIAO DIỆN CHÍNH ---
-st.title("🚀 Siêu Trợ Lý: Huyền Học - Marketing - Dịch Thuật")
+st.title("☯️ Siêu AI: Dịch Hán Nôm & Tài Liệu Cổ")
 
 with st.sidebar:
     st.header("⚙️ CẤU HÌNH")
     selected_model = st.selectbox("Chọn Model:", available_models)
-    st.caption("Mẹo: Dùng 'Flash' để dịch nhanh, 'Pro' để thông minh hơn.")
+    st.info("💡 Mẹo: Chọn 'Gemini 1.5 Pro' để dịch Hán Nôm dọc tốt nhất.")
     st.divider()
-    menu = st.radio("CHỨC NĂNG:", ["🔮 Hỏi Đáp Chuyên Sâu (Huyền học/Data)", "🏭 Dịch Thuật Công Nghiệp", "🖼️ Dịch Ảnh (OCR)"])
+    menu = st.radio("CHỨC NĂNG:", ["🏭 Dịch Tài Liệu (PDF/Hán Nôm/Ảnh)", "🔮 Hỏi Đáp Hán Học", "🖼️ Dịch Ảnh Rời (OCR)"])
 
 model = genai.GenerativeModel(selected_model)
 
 # ==============================================================================
-# 1. HỎI ĐÁP CHUYÊN SÂU
+# 1. DỊCH TÀI LIỆU (PDF CHỨA ẢNH & CHỮ)
 # ==============================================================================
-if menu == "🔮 Hỏi Đáp Chuyên Sâu (Huyền học/Data)":
-    st.subheader("🔮 Trợ Lý Chuyên Gia")
+if menu == "🏭 Dịch Tài Liệu (PDF/Hán Nôm/Ảnh)":
+    st.subheader("📜 Dịch PDF chứa Ảnh Minh Họa / Sách Cổ")
+    st.markdown("""
+    **Tính năng đặc biệt:**
+    - Tự động tách ảnh từ PDF.
+    - Nếu là ảnh sách cổ (chữ Hán dọc, phải sang trái) -> AI tự xoay chiều dịch sang tiếng Việt ngang.
+    - Kết quả xuất ra file Word: **[Hình Ảnh]** kèm **[Bản Dịch]** ngay bên dưới.
+    """)
     
-    with st.sidebar:
-        role = st.selectbox("Vai trò AI:", ["Đại sư Huyền học (Giang Công)", "Chuyên gia Marketing & Data", "Trợ lý đa năng"])
-        files = st.file_uploader("Nạp tài liệu (PDF/Docx):", accept_multiple_files=True)
-        if st.button("Nạp vào bộ não"):
-            if files:
-                st.session_state.context = get_text_from_files(files)
-                st.success(f"Đã nạp xong {len(files)} tài liệu!")
-            else:
-                st.warning("Chưa chọn file nào!")
+    instr = st.text_area("Yêu cầu dịch:", value="Dịch sang tiếng Việt hiện đại, văn phong trang trọng. Nếu là thơ giữ nguyên thể thơ.")
+    
+    uploaded_file = st.file_uploader("Tải file PDF:", type=['pdf'])
+    
+    if uploaded_file and st.button("🚀 Bắt đầu Phân Tích & Dịch"):
+        st.info("⏳ Đang tách bóc nội dung (Chữ và Ảnh) từ PDF...")
+        
+        # 1. Tách nội dung
+        try:
+            blocks = extract_content_from_pdf(uploaded_file)
+            st.success(f"✅ Đã tìm thấy: {len([b for b in blocks if b['type']=='text'])} đoạn văn bản và {len([b for b in blocks if b['type']=='image'])} hình ảnh.")
+        except Exception as e:
+            st.error(f"Lỗi đọc PDF: {e}")
+            st.stop()
 
-    if "context" not in st.session_state: st.session_state.context = ""
+        # 2. Xử lý dịch từng block
+        translation_results = []
+        p_bar = st.progress(0)
+        
+        for i, block in enumerate(blocks):
+            res_text = ""
+            
+            # --- TRƯỜNG HỢP 1: LÀ VĂN BẢN (TEXT) ---
+            if block['type'] == 'text':
+                content = block['content']
+                # Gộp prompt
+                prompt = f"YÊU CẦU: {instr}\nNỘI DUNG CẦN DỊCH:\n{content[:5000]}" # Cắt 5000 ký tự an toàn
+                
+                # Logic thử lại 3 lần
+                for attempt in range(3):
+                    try:
+                        res = model.generate_content(prompt, safety_settings=safety_settings)
+                        if res and res.text:
+                            res_text = res.text
+                            break
+                    except Exception as e:
+                        if "ResourceExhausted" in str(e): time.sleep(20)
+                        else: time.sleep(2)
+            
+            # --- TRƯỜNG HỢP 2: LÀ HÌNH ẢNH (IMAGE) ---
+            elif block['type'] == 'image':
+                img = block['content']
+                # Prompt đặc biệt cho Hán Nôm / Sách cổ
+                prompt_img = [
+                    f"""
+                    Hãy phân tích hình ảnh này. 
+                    1. Nếu đây là trang sách chữ Hán (viết dọc, từ phải sang trái): Hãy nhận diện chữ, phiên âm Hán Việt và dịch nghĩa sang tiếng Việt hiện đại (viết ngang, trái sang phải).
+                    2. Nếu đây là hình minh họa có chữ: Hãy dịch tất cả chữ trong hình.
+                    3. YÊU CẦU BỔ SUNG: {instr}
+                    """,
+                    img
+                ]
+                
+                for attempt in range(3):
+                    try:
+                        res = model.generate_content(prompt_img, safety_settings=safety_settings)
+                        if res and res.text:
+                            res_text = res.text
+                            break
+                    except Exception as e:
+                        if "ResourceExhausted" in str(e): time.sleep(20)
+                        else: time.sleep(2)
+
+            # Lưu kết quả
+            if res_text:
+                translation_results.append(res_text)
+                st.toast(f"✅ Xong phần {i+1}/{len(blocks)}")
+            else:
+                translation_results.append("[Không dịch được phần này]")
+            
+            p_bar.progress((i+1)/len(blocks))
+            time.sleep(1) # Nghỉ nhẹ
+
+        # 3. Xuất file
+        st.success("🎉 Hoàn tất dịch thuật!")
+        docx_file = save_docx_mixed(blocks, translation_results)
+        
+        st.download_button(
+            label="⬇️ Tải bản dịch Word (.docx)",
+            data=docx_file.getvalue(),
+            file_name=f"Dich_Han_Nom_{uploaded_file.name}.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+
+# ==============================================================================
+# 2. HỎI ĐÁP HÁN HỌC
+# ==============================================================================
+elif menu == "🔮 Hỏi Đáp Hán Học":
+    st.subheader("🔮 Giải Nghĩa Hán Nôm & Phong Thủy")
+    
     if "chat_history" not in st.session_state: st.session_state.chat_history = []
 
     for m in st.session_state.chat_history:
         st.chat_message(m["role"]).markdown(m["content"])
 
-    if q := st.chat_input("Hỏi AI..."):
+    if q := st.chat_input("Nhập câu đối, đoạn văn Hán cổ cần giải nghĩa..."):
         st.session_state.chat_history.append({"role": "user", "content": q})
         st.chat_message("user").markdown(q)
         
-        prompt = f"VAI TRÒ: {role}\nKIẾN THỨC BỔ TRỢ: {st.session_state.context}\nCÂU HỎI: {q}"
+        prompt = f"Bạn là một chuyên gia Hán Nôm và Huyền học. Hãy giải thích chi tiết đoạn sau (Phiên âm, Dịch nghĩa, Điển tích nếu có):\n{q}"
         
-        with st.spinner("AI đang suy nghĩ..."):
+        with st.spinner("Đang luận giải..."):
             try:
                 res = model.generate_content(prompt, safety_settings=safety_settings)
-                if res and res.text:
-                    st.chat_message("assistant").markdown(res.text)
-                    st.session_state.chat_history.append({"role": "assistant", "content": res.text})
-                else:
-                    st.error("AI không trả lời được câu này.")
+                st.chat_message("assistant").markdown(res.text)
+                st.session_state.chat_history.append({"role": "assistant", "content": res.text})
             except Exception as e: st.error(f"Lỗi: {e}")
 
 # ==============================================================================
-# 2. DỊCH THUẬT CÔNG NGHIỆP (ĐÃ SỬA LỖI CHI TIẾT)
+# 3. DỊCH ẢNH RỜI (OCR)
 # ==============================================================================
-elif menu == "🏭 Dịch Thuật Công Nghiệp":
-    st.subheader("🏭 Dịch Sách & Truyện Hàng Loạt")
-    instr = st.text_area("Yêu cầu dịch:", value="Dịch sang tiếng Việt mượt mà, văn phong chuyên nghiệp.")
-    gloss = st.text_area("Từ điển thuật ngữ:", value="Trúc Cơ, Nguyên Anh, ROI")
+elif menu == "🖼️ Dịch Ảnh Rời (OCR)":
+    st.subheader("🖼️ Upload Ảnh Lẻ (JPG/PNG)")
+    imgs = st.file_uploader("Tải ảnh lên:", accept_multiple_files=True, type=['png', 'jpg', 'jpeg'])
     
-    tab1, tab2 = st.tabs(["📄 Dịch File", "🌐 Dịch Link Web"])
-    
-    # --- TAB DỊCH FILE ---
-    with tab1:
-        up_files = st.file_uploader("Tải nhiều file:", accept_multiple_files=True)
-        
-        if st.button("Bắt đầu dịch File"):
-            if not up_files:
-                st.warning("⚠️ Vui lòng chọn file trước!")
-            else:
-                for f in up_files:
-                    st.info(f"📂 Đang xử lý file: {f.name}...")
-                    
-                    # 1. Đọc file
-                    txt = get_text_from_files([f])
-                    
-                    # --- KIỂM TRA FILE RỖNG (QUAN TRỌNG) ---
-                    if not txt or len(txt.strip()) < 10:
-                        st.error(f"❌ File {f.name} không đọc được chữ! (Có thể là file PDF scan/ảnh). Hãy dùng chức năng 'Dịch Ảnh (OCR)' thay thế.")
-                        continue
-                    # ---------------------------------------
-
-                    chunks = [txt[i:i+20000] for i in range(0, len(txt), 20000)] # Giảm xuống 4000 cho an toàn
-                    full_trans = ""
-                    p_bar = st.progress(0)
-                    
-                    st.write(f"👉 File có {len(chunks)} đoạn cần dịch.")
-
-                    # 2. Vòng lặp dịch
-                    for i, c in enumerate(chunks):
-                        res = None 
-                        flag_success = False
-                        error_msg = "Chưa rõ nguyên nhân"
-                        
-                        # Thử lại 3 lần
-                        for attempt in range(3):
-                            try:
-                                prompt_text = f"YÊU CẦU: {instr}\nTHUẬT NGỮ: {gloss}\nNỘI DUNG GỐC:\n{c}"
-                                res = model.generate_content(prompt_text, safety_settings=safety_settings)
-                                flag_success = True
-                                break 
-                            except Exception as e:
-                                error_msg = str(e)
-                                if "ResourceExhausted" in str(e):
-                                    st.toast(f"⏳ Mạng bận (Lần {attempt+1}), đợi 20 giây...")
-                                    time.sleep(20)
-                                else:
-                                    time.sleep(2) # Lỗi khác thì đợi ít hơn
-
-                        # Xử lý kết quả
-                        if flag_success and res and res.text:
-                            full_trans += res.text + "\n\n"
-                            st.toast(f"✅ Xong đoạn {i+1}/{len(chunks)}")
-                        else:
-                            # In lỗi ra màn hình để biết tại sao
-                            st.error(f"❌ Lỗi đoạn {i+1}: {error_msg}")
-                            if res and res.prompt_feedback:
-                                st.caption(f"Chi tiết chặn: {res.prompt_feedback}")
-                            
-                            full_trans += f"\n[ĐOẠN {i+1} BỊ LỖI: {error_msg}]\n\n"
-                        
-                        # Cập nhật thanh tiến trình
-                        p_bar.progress((i+1)/len(chunks))
-                        time.sleep(1) # Nghỉ nhẹ để tránh spam server
-
-                    st.success(f"✅ Hoàn tất file: {f.name}")
-                    st.download_button(f"⬇️ Tải về {f.name}", save_docx(full_trans).getvalue(), f"VN_{f.name}.docx")
-
-    # --- TAB DỊCH WEB ---
-    with tab2:
-        urls = st.text_area("Dán danh sách Link (mỗi dòng 1 link):")
-        if st.button("Bắt đầu dịch Link"):
-            links = urls.split("\n")
-            all_txt = ""
-            for l in links:
-                if l.strip():
-                    raw = scrape_url(l.strip())
-                    if raw:
-                        try:
-                            res = model.generate_content(f"Dịch bài này sang tiếng Việt:\n{raw[:15000]}", safety_settings=safety_settings)
-                            if res and res.text:
-                                all_txt += f"\n--- {l} ---\n{res.text}\n"
-                        except Exception as e:
-                            all_txt += f"\n[Lỗi dịch link {l}: {e}]\n"
-            st.download_button("Tải file dịch Web", save_docx(all_txt).getvalue(), "Dich_Web.docx")
-
-# ==============================================================================
-# 3. DỊCH ẢNH (OCR)
-# ==============================================================================
-elif menu == "🖼️ Dịch Ảnh (OCR)":
-    st.subheader("🖼️ Dịch chữ từ Hình ảnh")
-    imgs = st.file_uploader("Tải ảnh lên (PNG/JPG):", accept_multiple_files=True)
-    
-    if imgs and st.button("Bắt đầu dịch ảnh"):
-        full_ocr = ""
+    if imgs and st.button("Dịch Ngay"):
         for im_f in imgs:
-            try:
-                img = Image.open(im_f)
-                st.image(img, caption=f"Ảnh: {im_f.name}", width=300)
-                
-                with st.spinner("Đang soi chữ và dịch..."):
+            img = Image.open(im_f)
+            st.image(img, width=300)
+            with st.spinner(f"Đang dịch {im_f.name}..."):
+                try:
                     res = model.generate_content(
-                        ["Trích xuất toàn bộ chữ trong ảnh và dịch sang Tiếng Việt:", img], 
+                        ["Nhận diện chữ Hán/Nôm (kể cả viết dọc) và dịch sang Tiếng Việt:", img], 
                         safety_settings=safety_settings
                     )
-                    if res and res.text:
-                        st.write(res.text)
-                        full_ocr += f"\n--- {im_f.name} ---\n{res.text}\n"
-                    else:
-                        st.warning(f"Không đọc được ảnh {im_f.name}")
-            except Exception as e:
-                st.error(f"Lỗi ảnh {im_f.name}: {e}")
-        
-        if full_ocr:
-            st.download_button("Tải file kết quả", save_docx(full_ocr).getvalue(), "Dich_Anh.docx")
+                    st.write(res.text)
+                except Exception as e:
+                    st.error(f"Lỗi: {e}")
