@@ -4,5 +4,4 @@ python-docx
 beautifulsoup4
 Pillow
 requests
-PyPDF2
 pymupdf
