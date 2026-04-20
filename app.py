@@ -1,158 +1,136 @@
 import streamlit as st
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
-import io, time, re
+import io, time, random
 from PIL import Image
-import fitz # PyMuPDF
+import fitz
 from docx import Document
 from docx.shared import Inches
 
-# --- CẤU HÌNH HỆ THỐNG ---
-st.set_page_config(page_title="Gemini Next-Gen Translator", layout="wide", page_icon="🚀")
+# --- CẤU HÌNH TRANG ---
+st.set_page_config(page_title="Gemini Custom Translator", layout="wide", page_icon="⚙️")
 
-# --- HÀM TỰ ĐỘNG CẬP NHẬT MODEL MỚI NHẤT ---
-def get_latest_gemini_model():
+# --- QUẢN LÝ API KEY ---
+def get_api_keys():
+    # Lấy danh sách key từ Secrets (hỗ trợ cả 1 key hoặc nhiều key)
+    keys = st.secrets.get("GEMINI_KEYS", [])
+    if not keys:
+        key_single = st.secrets.get("GEMINI_API_KEY")
+        if key_single: keys = [key_single]
+    return keys
+
+# --- LẤY DANH SÁCH MODEL KHẢ DỤNG ---
+def fetch_available_models(api_key):
     try:
-        # Lấy danh sách tất cả model khả dụng
-        available_models = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods and 'gemini' in m.name:
-                available_models.append(m.name)
-        
-        if not available_models:
-            return "models/gemini-1.5-pro" # Dự phòng tối thiểu
+        genai.configure(api_key=api_key)
+        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        return sorted(models, reverse=True)
+    except:
+        return ["models/gemini-1.5-pro", "models/gemini-1.5-flash", "models/gemini-2.0-flash-exp"]
 
-        # Sắp xếp theo thứ tự phiên bản (ví dụ: 3.1 > 2.0 > 1.5)
-        # Tìm các con số trong tên model để so sánh
-        def natural_sort_key(s):
-            return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', s)]
-        
-        available_models.sort(key=natural_sort_key, reverse=True)
-        
-        # Ưu tiên bản "pro" nếu có nhiều biến thể cùng phiên bản
-        for m in available_models:
-            if "pro" in m.lower():
-                return m
-                
-        return available_models[0]
-    except Exception as e:
-        st.warning(f"⚠️ Không thể quét danh sách model: {e}. Dùng mặc định.")
-        return "models/gemini-1.5-pro"
+# --- GIAO DIỆN THANH BÊN (SIDEBAR) ---
+with st.sidebar:
+    st.header("⚙️ CẤU HÌNH MODEL")
+    
+    keys = get_api_keys()
+    if not keys:
+        st.error("❌ Chưa nhập API Key vào Secrets!")
+        st.stop()
+    
+    # Nút chọn Model
+    base_models = fetch_available_models(keys[0])
+    selected_model = st.selectbox("Chọn phiên bản Gemini:", base_models, index=0)
+    
+    # Cho phép nhập thủ công nếu là bản 3.1 hoặc bản mới hơn
+    custom_model = st.text_input("Hoặc nhập tên Model thủ công:", placeholder="models/gemini-3.1-pro")
+    
+    final_model_name = custom_model if custom_model else selected_model
+    st.info(f"Đang dùng: **{final_model_name}**")
+    
+    st.divider()
+    st.header("📝 CHỈ THỊ DỊCH")
+    instr = st.text_area("Yêu cầu:", "Dịch sang tiếng Việt mượt mà, giữ nguyên thuật ngữ chuyên môn.")
+    glossary = st.text_area("Từ điển thuật ngữ:", "AI -> Trí tuệ nhân tạo")
 
-# --- KẾT NỐI API ---
-if "GEMINI_API_KEY" not in st.secrets:
-    st.error("❌ Thiếu GEMINI_API_KEY trong Streamlit Secrets!")
-    st.stop()
-
-genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-LATEST_MODEL = get_latest_gemini_model()
-
-st.sidebar.success(f"🤖 Đang sử dụng phiên bản: {LATEST_MODEL}")
-
-safety_settings = {
-    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-}
-
-# --- ENGINE DỊCH THUẬT THÔNG MINH ---
-
-def translate_logic(prompt_data):
-    """Gửi yêu cầu dịch và tự động xử lý các lỗi nghẽn mạch"""
-    model = genai.GenerativeModel(LATEST_MODEL)
+# --- ENGINE DỊCH THUẬT ---
+def translate_engine(prompt_data):
+    # Xoay vòng Key để chống lỗi hạn mức (Quota)
+    current_key = random.choice(keys)
+    genai.configure(api_key=current_key)
+    model = genai.GenerativeModel(final_model_name)
+    
+    safety = {
+        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+    }
+    
     for attempt in range(5):
         try:
-            res = model.generate_content(prompt_data, safety_settings=safety_settings)
+            res = model.generate_content(prompt_data, safety_settings=safety)
             if res and res.text:
                 return res.text
         except Exception as e:
-            err_str = str(e)
-            if "429" in err_str or "quota" in err_str.lower():
+            if "429" in str(e):
                 wait = 20 + (attempt * 10)
-                st.toast(f"⏳ Hạn mức API tạm hết, đợi {wait}s...", icon="⏳")
+                st.toast(f"⏳ Hết hạn mức, đợi {wait}s...", icon="⏳")
                 time.sleep(wait)
             else:
-                st.error(f"❌ Lỗi: {err_str}")
+                st.error(f"Lỗi: {e}")
                 time.sleep(5)
-    return "[Lỗi: Không thể hoàn thành đoạn dịch này]"
+    return "[Lỗi dịch đoạn này]"
 
-def process_heavy_text(text, instruction):
-    """Chia nhỏ 30.000 từ thành các block để dịch không bị mất chữ"""
-    # Ngay cả Gemini 3.1 cũng có giới hạn Token đầu ra, nên chia block 12k ký tự là an toàn nhất
-    chunks = [text[i:i+12000] for i in range(0, len(text), 12000)]
+# --- XỬ LÝ VĂN BẢN LỚN (30.000 TỪ) ---
+def process_text_30k(text):
+    # Chia nhỏ 30.000 từ thành các đoạn 10.000 ký tự (~3000 từ mỗi đoạn)
+    chunks = [text[i:i+10000] for i in range(0, len(text), 10000)]
     translated_parts = []
-    
     for c in chunks:
-        p = f"{instruction}\n\nNỘI DUNG GỐC:\n{c}"
-        part = translate_logic(p)
-        translated_parts.append(part)
-        time.sleep(1) # Nghỉ ngắn tránh lỗi spam
-    
+        res = translate_engine(f"{instr}\nThuật ngữ: {glossary}\n\nNội dung:\n{c}")
+        translated_parts.append(res)
     return "\n".join(translated_parts)
 
-# --- XỬ LÝ FILE ---
+# --- CHƯƠNG TRÌNH CHÍNH ---
+st.title("🛡️ Siêu Trợ Lý Dịch Thuật Đa Phiên Bản")
 
-def extract_pdf(f):
-    doc = fitz.open(stream=f.read(), filetype="pdf")
-    results = []
-    for page in doc:
-        # Lấy văn bản
+uploaded_file = st.file_uploader("Tải lên PDF (Hỗ trợ tài liệu cực lớn):", type="pdf")
+
+if uploaded_file and st.button("🚀 BẮT ĐẦU DỊCH"):
+    doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+    final_results = []
+    
+    progress = st.progress(0)
+    for i, page in enumerate(doc):
+        # 1. Dịch chữ
         text = page.get_text().strip()
-        if text: results.append({"type": "text", "val": text})
-        # Lấy hình ảnh
+        if text:
+            translated_text = process_text_30k(text)
+            final_results.append({"type": "text", "val": translated_text})
+        
+        # 2. Dịch ảnh
         for img_info in page.get_images():
             try:
-                xref = img_info[0]
-                img_data = doc.extract_image(xref)
-                if img_data["size"] > 10000:
-                    pil_img = Image.open(io.BytesIO(img_data["image"]))
-                    results.append({"type": "image", "val": pil_img})
+                base = doc.extract_image(img_info[0])
+                pil_img = Image.open(io.BytesIO(base["image"]))
+                if base["size"] > 15000: # Bỏ qua ảnh rác
+                    trans_img = translate_engine([f"Dịch chữ trong ảnh này: {instr}", pil_img])
+                    final_results.append({"type": "image", "val": pil_img, "trans": trans_img})
             except: pass
-    return results
-
-# --- GIAO DIỆN NGƯỜI DÙNG ---
-st.title("🛡️ Siêu Trợ Lý Gemini 3.1 Auto-Update")
-st.subheader("Dịch thuật công nghiệp không giới hạn số từ")
-
-with st.sidebar:
-    st.header("Cấu hình dịch")
-    instr = st.text_area("Chỉ thị dịch:", "Dịch sang tiếng Việt mượt mà, văn phong chuyên nghiệp, giữ nguyên ý nghĩa gốc.")
-    glossary = st.text_area("Thuật ngữ:", "VD: Blockchain -> Chuỗi khối")
-
-up_files = st.file_uploader("Tải lên tài liệu (PDF/Docx/TXT):", accept_multiple_files=True)
-
-if st.button("🚀 BẮT ĐẦU DỊCH NGAY") and up_files:
-    for f in up_files:
-        st.write(f"📂 **Đang xử lý file:** {f.name}")
-        content_list = extract_pdf(f)
-        
-        translated_content = []
-        p_bar = st.progress(0)
-        
-        for idx, item in enumerate(content_list):
-            if item['type'] == 'text':
-                res = process_heavy_text(item['val'], f"{instr}\nThuật ngữ: {glossary}")
-                translated_content.append({"type": "text", "val": res})
-            elif item['type'] == 'image':
-                # Dịch ảnh dùng Multimodal
-                res = translate_logic([f"Dịch các chữ trong ảnh này sang tiếng Việt. {instr}", item['val']])
-                translated_content.append({"type": "image", "val": item['val'], "trans": res})
             
-            p_bar.progress((idx + 1) / len(content_list))
+        progress.progress((i + 1) / len(doc))
 
-        # Xuất file Word
-        out_doc = Document()
-        for c in translated_content:
-            if c['type'] == 'text':
-                out_doc.add_paragraph(c['val'])
-            else:
-                img_stream = io.BytesIO()
-                c['val'].save(img_stream, format='PNG')
-                out_doc.add_picture(img_stream, width=Inches(5))
-                out_doc.add_paragraph(f"[Bản dịch ảnh]: {c['trans']}").italic = True
-        
-        final_bio = io.BytesIO()
-        out_doc.save(final_bio)
-        st.download_button(f"⬇️ Tải bản dịch {f.name}", final_bio.getvalue(), f"Translated_{f.name}.docx")
-        st.success(f"✅ Đã xong: {f.name}")
+    # Tạo file Word
+    out_doc = Document()
+    for item in final_results:
+        if item['type'] == 'text':
+            out_doc.add_paragraph(item['val'])
+        else:
+            img_io = io.BytesIO()
+            item['val'].save(img_io, format='PNG')
+            out_doc.add_picture(img_io, width=Inches(5))
+            out_doc.add_paragraph(f"[Bản dịch ảnh]: {item['trans']}").italic = True
+            
+    bio = io.BytesIO()
+    out_doc.save(bio)
+    st.download_button("⬇️ Tải xuống bản dịch (.docx)", bio.getvalue(), f"Dich_{final_model_name.replace('/', '_')}.docx")
