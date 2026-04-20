@@ -3,134 +3,143 @@ import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import io, time, random
 from PIL import Image
-import fitz
+import fitz  # PyMuPDF
 from docx import Document
 from docx.shared import Inches
 
-# --- CẤU HÌNH TRANG ---
-st.set_page_config(page_title="Gemini Custom Translator", layout="wide", page_icon="⚙️")
+# --- CẤU HÌNH HỆ THỐNG ---
+st.set_page_config(page_title="Siêu Trợ Lý Đa Năng 2026", layout="wide", page_icon="🚀")
 
-# --- QUẢN LÝ API KEY ---
-def get_api_keys():
-    # Lấy danh sách key từ Secrets (hỗ trợ cả 1 key hoặc nhiều key)
-    keys = st.secrets.get("GEMINI_KEYS", [])
-    if not keys:
-        key_single = st.secrets.get("GEMINI_API_KEY")
-        if key_single: keys = [key_single]
-    return keys
-
-# --- LẤY DANH SÁCH MODEL KHẢ DỤNG ---
-def fetch_available_models(api_key):
+# --- HÀM LẤY MODEL MỚI NHẤT ---
+def get_models(api_key):
     try:
         genai.configure(api_key=api_key)
-        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        return sorted(models, reverse=True)
+        return [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
     except:
-        return ["models/gemini-1.5-pro", "models/gemini-1.5-flash", "models/gemini-2.0-flash-exp"]
+        return ["models/gemini-1.5-pro", "models/gemini-1.5-flash"]
 
-# --- GIAO DIỆN THANH BÊN (SIDEBAR) ---
+# --- SIDEBAR: CẤU HÌNH ---
 with st.sidebar:
-    st.header("⚙️ CẤU HÌNH MODEL")
+    st.header("⚙️ Cài đặt hệ thống")
+    keys = st.secrets.get("GEMINI_KEYS", [st.secrets.get("GEMINI_API_KEY")])
     
-    keys = get_api_keys()
-    if not keys:
-        st.error("❌ Chưa nhập API Key vào Secrets!")
-        st.stop()
-    
-    # Nút chọn Model
-    base_models = fetch_available_models(keys[0])
-    selected_model = st.selectbox("Chọn phiên bản Gemini:", base_models, index=0)
-    
-    # Cho phép nhập thủ công nếu là bản 3.1 hoặc bản mới hơn
-    custom_model = st.text_input("Hoặc nhập tên Model thủ công:", placeholder="models/gemini-3.1-pro")
-    
-    final_model_name = custom_model if custom_model else selected_model
-    st.info(f"Đang dùng: **{final_model_name}**")
+    # Chọn model
+    available_models = get_models(keys[0])
+    selected_model = st.selectbox("Chọn Model Gemini:", available_models)
+    custom_model = st.text_input("Hoặc nhập mã model (VD: models/gemini-3.1-pro):")
+    final_model = custom_model if custom_model else selected_model
     
     st.divider()
-    st.header("📝 CHỈ THỊ DỊCH")
-    instr = st.text_area("Yêu cầu:", "Dịch sang tiếng Việt mượt mà, giữ nguyên thuật ngữ chuyên môn.")
+    instr = st.text_area("Yêu cầu dịch:", "Dịch sang tiếng Việt mượt mà, văn phong chuyên nghiệp.")
     glossary = st.text_area("Từ điển thuật ngữ:", "AI -> Trí tuệ nhân tạo")
 
-# --- ENGINE DỊCH THUẬT ---
-def translate_engine(prompt_data):
-    # Xoay vòng Key để chống lỗi hạn mức (Quota)
-    current_key = random.choice(keys)
-    genai.configure(api_key=current_key)
-    model = genai.GenerativeModel(final_model_name)
+# --- ENGINE DỊCH THUẬT CHỐNG NGHẼN ---
+def translate_core(prompt_parts):
+    # Xoay vòng key ngẫu nhiên để tăng hạn mức
+    genai.configure(api_key=random.choice(keys))
+    model = genai.GenerativeModel(final_model)
     
-    safety = {
-        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-    }
-    
-    for attempt in range(5):
+    for attempt in range(10): # Thử lại tối đa 10 lần
         try:
-            res = model.generate_content(prompt_data, safety_settings=safety)
-            if res and res.text:
-                return res.text
+            res = model.generate_content(prompt_parts, safety_settings={
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            })
+            return res.text
         except Exception as e:
             if "429" in str(e):
-                wait = 20 + (attempt * 10)
-                st.toast(f"⏳ Hết hạn mức, đợi {wait}s...", icon="⏳")
+                wait = 30 + (attempt * 10)
+                st.toast(f"⏳ Đang nghẽn mạch, nghỉ {wait}s...", icon="💤")
                 time.sleep(wait)
             else:
                 st.error(f"Lỗi: {e}")
                 time.sleep(5)
-    return "[Lỗi dịch đoạn này]"
+    return "[Lỗi: Hết hạn mức hoàn toàn]"
 
-# --- XỬ LÝ VĂN BẢN LỚN (30.000 TỪ) ---
-def process_text_30k(text):
-    # Chia nhỏ 30.000 từ thành các đoạn 10.000 ký tự (~3000 từ mỗi đoạn)
+# --- HÀM XỬ LÝ VĂN BẢN 30.000 TỪ ---
+def process_text_large(text):
+    # Chia nhỏ 30k từ thành các block 10k ký tự
     chunks = [text[i:i+10000] for i in range(0, len(text), 10000)]
-    translated_parts = []
+    results = []
     for c in chunks:
-        res = translate_engine(f"{instr}\nThuật ngữ: {glossary}\n\nNội dung:\n{c}")
-        translated_parts.append(res)
-    return "\n".join(translated_parts)
+        res = translate_core(f"{instr}\nThuật ngữ: {glossary}\n\nNội dung:\n{c}")
+        results.append(res)
+    return "\n".join(results)
+
+# --- TRÍCH XUẤT ĐA ĐỊNH DẠNG ---
+def extract_content(uploaded_file):
+    name = uploaded_file.name.lower()
+    content = []
+
+    # 1. Xử lý PDF
+    if name.endswith('.pdf'):
+        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+        for page in doc:
+            text = page.get_text().strip()
+            if text: content.append({"type": "text", "val": text})
+            for img in page.get_images():
+                try:
+                    base = doc.extract_image(img[0])
+                    if base["size"] > 15000:
+                        content.append({"type": "image", "val": Image.open(io.BytesIO(base["image"]))})
+                except: pass
+
+    # 2. Xử lý DOCX
+    elif name.endswith('.docx'):
+        doc = Document(uploaded_file)
+        full_text = "\n".join([para.text for para in doc.paragraphs])
+        content.append({"type": "text", "val": full_text})
+
+    # 3. Xử lý TXT
+    elif name.endswith('.txt'):
+        text = uploaded_file.getvalue().decode("utf-8")
+        content.append({"type": "text", "val": text})
+
+    # 4. Xử lý Hình ảnh trực tiếp
+    elif name.endswith(('.png', '.jpg', '.jpeg')):
+        img = Image.open(uploaded_file)
+        content.append({"type": "image", "val": img})
+        
+    return content
 
 # --- CHƯƠNG TRÌNH CHÍNH ---
-st.title("🛡️ Siêu Trợ Lý Dịch Thuật Đa Phiên Bản")
+st.title("🛡️ Siêu Trợ Lý Dịch Thuật Đa Định Dạng")
+st.write("Hỗ trợ: **PDF, Word, Text, Hình ảnh (OCR)**")
 
-uploaded_file = st.file_uploader("Tải lên PDF (Hỗ trợ tài liệu cực lớn):", type="pdf")
+up_files = st.file_uploader("Nạp tệp tin của bạn tại đây:", accept_multiple_files=True)
 
-if uploaded_file and st.button("🚀 BẮT ĐẦU DỊCH"):
-    doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-    final_results = []
+if st.button("🚀 BẮT ĐẦU DỊCH TẤT CẢ") and up_files:
+    final_output = []
     
-    progress = st.progress(0)
-    for i, page in enumerate(doc):
-        # 1. Dịch chữ
-        text = page.get_text().strip()
-        if text:
-            translated_text = process_text_30k(text)
-            final_results.append({"type": "text", "val": translated_text})
+    for f in up_files:
+        st.info(f"📂 Đang xử lý: {f.name}")
+        items = extract_content(f)
         
-        # 2. Dịch ảnh
-        for img_info in page.get_images():
-            try:
-                base = doc.extract_image(img_info[0])
-                pil_img = Image.open(io.BytesIO(base["image"]))
-                if base["size"] > 15000: # Bỏ qua ảnh rác
-                    trans_img = translate_engine([f"Dịch chữ trong ảnh này: {instr}", pil_img])
-                    final_results.append({"type": "image", "val": pil_img, "trans": trans_img})
-            except: pass
-            
-        progress.progress((i + 1) / len(doc))
+        p_bar = st.progress(0)
+        for i, item in enumerate(items):
+            if item['type'] == 'text':
+                translated = process_text_large(item['val'])
+                final_output.append({"type": "text", "val": translated})
+            elif item['type'] == 'image':
+                trans_img = translate_core([f"Dịch các chữ trong ảnh này: {instr}", item['val']])
+                final_output.append({"type": "image", "val": item['val'], "trans": trans_img})
+            p_bar.progress((i + 1) / len(items))
 
-    # Tạo file Word
+    # Xuất file Word duy nhất
     out_doc = Document()
-    for item in final_results:
-        if item['type'] == 'text':
-            out_doc.add_paragraph(item['val'])
+    out_doc.add_heading('BẢN DỊCH TỔNG HỢP', 0)
+    for res in final_output:
+        if res['type'] == 'text':
+            out_doc.add_paragraph(res['val'])
         else:
             img_io = io.BytesIO()
-            item['val'].save(img_io, format='PNG')
+            res['val'].save(img_io, format='PNG')
             out_doc.add_picture(img_io, width=Inches(5))
-            out_doc.add_paragraph(f"[Bản dịch ảnh]: {item['trans']}").italic = True
+            out_doc.add_paragraph(f"[Bản dịch ảnh]: {res['trans']}").italic = True
             
     bio = io.BytesIO()
     out_doc.save(bio)
-    st.download_button("⬇️ Tải xuống bản dịch (.docx)", bio.getvalue(), f"Dich_{final_model_name.replace('/', '_')}.docx")
+    st.download_button("⬇️ Tải xuống kết quả (.docx)", bio.getvalue(), "Ket_Qua_Dich.docx")
+    st.success("🎉 Đã hoàn thành toàn bộ!")
