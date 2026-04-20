@@ -1,17 +1,26 @@
 import streamlit as st
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
-import os, io, requests, time
+import io, time
 from PIL import Image
 import fitz  # PyMuPDF
 from docx import Document
 from docx.shared import Inches
-from bs4 import BeautifulSoup
 
-# --- CẤU HÌNH TRANG ---
-st.set_page_config(page_title="Siêu AI Đa Năng", page_icon="🚀", layout="wide")
+# --- CẤU HÌNH HỆ THỐNG 2026 ---
+st.set_page_config(page_title="Gemini 3.1 Ultra Translator", layout="wide")
 
-# --- CẤU HÌNH AN TOÀN ---
+# Thiết lập Model - Cập nhật tên model theo phiên bản mới nhất bạn có
+# Ví dụ: "models/gemini-3.1-pro", "models/gemini-3.1-flash"
+MODEL_ID = "models/gemini-3.1-pro" 
+
+try:
+    api_key = st.secrets["GEMINI_API_KEY"]
+    genai.configure(api_key=api_key)
+except:
+    st.error("⚠️ Vui lòng cấu hình GEMINI_API_KEY!")
+    st.stop()
+
 safety_settings = {
     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -19,128 +28,124 @@ safety_settings = {
     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
 }
 
-# --- KẾT NỐI API ---
-if "GEMINI_API_KEY" not in st.secrets:
-    st.error("⚠️ Chưa cấu hình GEMINI_API_KEY trong Secrets.")
-    st.stop()
+# --- ENGINE DỊCH THUẬT 30.000 TỪ ---
 
-genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+def process_large_text(text, instruction, glossary):
+    """
+    Chia nhỏ 30.000 từ thành các block lớn để dịch.
+    Mỗi block khoảng 15.000 - 20.000 ký tự (~4000 từ) 
+    để đảm bảo kết quả trả về (output) không bị cắt ngang.
+    """
+    # Gemini 3.1 có context window cực lớn, nhưng output limit vẫn là điểm cần lưu ý
+    max_chunk_size = 20000 
+    chunks = [text[i:i+max_chunk_size] for i in range(0, len(text), max_chunk_size)]
+    
+    translated_chunks = []
+    model = genai.GenerativeModel(MODEL_ID)
+    
+    progress_text = st.empty()
+    
+    for idx, chunk in enumerate(chunks):
+        progress_text.text(f"⏳ Đang dịch khối {idx+1}/{len(chunks)}...")
+        
+        prompt = f"""
+        VAI TRÒ: Chuyên gia dịch thuật ngôn ngữ cao cấp.
+        NHIỆM VỤ: Dịch văn bản sau sang Tiếng Việt.
+        YÊU CẦU: {instruction}
+        THUẬT NGỮ CẦN TUÂN THỦ: {glossary}
+        
+        NỘI DUNG GỐC:
+        {chunk}
+        """
+        
+        success = False
+        retries = 0
+        while not success and retries < 5:
+            try:
+                response = model.generate_content(prompt, safety_settings=safety_settings)
+                if response.text:
+                    translated_chunks.append(response.text)
+                    success = True
+            except Exception as e:
+                retries += 1
+                wait_time = 15 * retries
+                st.warning(f"⚠️ Lỗi Quota/Kết nối. Đang đợi {wait_time}s (Lần thử {retries})...")
+                time.sleep(wait_time)
+        
+        # Nghỉ ngắn giữa các block để tối ưu hóa API
+        time.sleep(2)
+        
+    return "\n".join(translated_chunks)
 
-# Lấy danh sách model có sẵn
-try:
-    available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-    default_model = "models/gemini-1.5-flash" if "models/gemini-1.5-flash" in available_models else available_models[0]
-except:
-    default_model = "models/gemini-1.5-flash"
+# --- XỬ LÝ FILE ĐA PHƯƠNG TIỆN ---
 
-# --- HÀM XỬ LÝ ---
-
-def process_pdf_mixed(file_bytes):
-    """Tách chữ và ảnh từ PDF"""
+def extract_pdf_content(f):
+    file_bytes = f.read()
     doc = fitz.open(stream=file_bytes, filetype="pdf")
-    content_list = []
-
-    for page_num, page in enumerate(doc):
-        # 1. Lấy chữ
+    elements = []
+    
+    for page in doc:
+        # Lấy văn bản
         text = page.get_text().strip()
         if text:
-            content_list.append({"type": "text", "val": text})
-
-        # 2. Lấy ảnh
-        image_list = page.get_images(full=True)
-        for img_index, img in enumerate(image_list):
+            elements.append({"type": "text", "val": text})
+        
+        # Lấy hình ảnh (Hỗ trợ Hán Nôm/Hình ảnh minh họa)
+        for img in page.get_images():
             try:
-                xref = img[0]
-                base_image = doc.extract_image(xref)
-                image_bytes = base_image["image"]
-                if len(image_bytes) > 10240: # Chỉ lấy ảnh > 10KB
-                    img_pil = Image.open(io.BytesIO(image_bytes))
-                    content_list.append({"type": "image", "val": img_pil})
-            except:
-                continue
-    return content_list
-
-def save_docx_mixed(contents):
-    """Lưu kết quả ra file Word"""
-    doc = Document()
-    for item in contents:
-        if item['type'] == 'text':
-            doc.add_paragraph(item['val'])
-        elif item['type'] == 'image':
-            img_io = io.BytesIO()
-            item['val'].save(img_io, format='PNG')
-            doc.add_picture(img_io, width=Inches(5))
-            if 'trans' in item:
-                p = doc.add_paragraph()
-                p.add_run(f"\n[DỊCH ẢNH]: {item['trans']}").italic = True
-    
-    bio = io.BytesIO()
-    doc.save(bio)
-    return bio.getvalue()
+                base_img = doc.extract_image(img[0])
+                pil_img = Image.open(io.BytesIO(base_img["image"]))
+                if base_img["size"] > 20000: # Chỉ lấy ảnh chất lượng cao
+                    elements.append({"type": "image", "val": pil_img})
+            except: pass
+    return elements
 
 # --- GIAO DIỆN ---
-st.title("🚀 Siêu Trợ Lý Dịch Thuật Đa Năng")
+st.title("🛡️ Gemini 3.1 Pro: Industrial Translation System")
+st.caption(f"Phiên bản tối ưu cho tài liệu lớn | Model: {MODEL_ID}")
 
-with st.sidebar:
-    selected_model = st.selectbox("Chọn Model:", [default_model] + ["models/gemini-1.5-pro"])
-    menu = st.radio("CHỨC NĂNG:", ["🏭 Dịch Thuật Công Nghiệp", "🔮 Hỏi Đáp", "🖼️ Dịch Ảnh (OCR)"])
+col1, col2 = st.columns([1, 3])
 
-model = genai.GenerativeModel(selected_model)
+with col1:
+    st.header("Cấu hình")
+    instruction = st.text_area("Chỉ thị dịch nâng cao:", "Dịch thuật học thuật, văn phong trang trọng, mượt mà.")
+    glossary = st.text_area("Từ điển (Glossary):", "AI -> Trí tuệ nhân tạo\nBlockchain -> Chuỗi khối")
+    
+up_files = st.file_uploader("Nạp tài liệu (PDF lên đến 30.000 từ):", accept_multiple_files=True)
 
-if menu == "🏭 Dịch Thuật Công Nghiệp":
-    st.subheader("🏭 Dịch Sách/Tài liệu (Hỗ trợ PDF Mixed)")
-    
-    instr = st.text_area("Yêu cầu dịch:", "Dịch sang tiếng Việt mượt mà, văn phong chuyên nghiệp.")
-    gloss = st.text_area("Thuật ngữ (Glossary):", "VD: Trúc Cơ -> Foundation Establishment")
-    
-    up_files = st.file_uploader("Tải tệp lên (PDF, Docx, TXT):", accept_multiple_files=True)
-    
-    if st.button("🚀 Bắt đầu dịch") and up_files:
-        for f in up_files:
-            st.info(f" đang xử lý: {f.name}")
-            file_bytes = f.read() # Đọc bytes một lần duy nhất
+if st.button("🚀 BẮT ĐẦU XỬ LÝ") and up_files:
+    for f in up_files:
+        with st.status(f"Đang xử lý {f.name}...", expanded=True) as status:
+            elements = extract_pdf_content(f)
+            st.write(f"🔍 Tìm thấy {len(elements)} phân đoạn (văn bản & hình ảnh).")
             
-            # Phân tích nội dung
-            raw_contents = []
-            if f.name.endswith('.pdf'):
-                raw_contents = process_pdf_mixed(file_bytes)
-            else:
-                # Xử lý đơn giản cho TXT/Docx (Chỉ lấy chữ)
-                raw_contents = [{"type": "text", "val": file_bytes.decode('utf-8', errors='ignore')}]
-
-            final_results = []
-            p_bar = st.progress(0)
+            final_content = []
             
-            for idx, item in enumerate(raw_contents):
-                try:
-                    if item['type'] == 'text':
-                        prompt = f"{instr}\nThuật ngữ: {gloss}\nNội dung:\n{item['val']}"
-                        res = model.generate_content(prompt, safety_settings=safety_settings)
-                        final_results.append({"type": "text", "val": res.text if res else "[Lỗi dịch đoạn này]"})
-                    
-                    elif item['type'] == 'image':
-                        prompt = [f"Dịch chữ trong ảnh này sang tiếng Việt. {instr}", item['val']]
-                        res = model.generate_content(prompt, safety_settings=safety_settings)
-                        final_results.append({"type": "image", "val": item['val'], "trans": res.text if res else ""})
-                    
-                    p_bar.progress((idx + 1) / len(raw_contents))
-                    time.sleep(1) # Tránh Rate Limit
-                except Exception as e:
-                    st.error(f"Lỗi tại phần tử {idx}: {e}")
-                    time.sleep(5)
+            for item in elements:
+                if item['type'] == 'text':
+                    # Sử dụng engine dịch block lớn
+                    translated_val = process_large_text(item['val'], instruction, glossary)
+                    final_content.append({"type": "text", "val": translated_val})
+                
+                elif item['type'] == 'image':
+                    st.write("🖼️ Đang dịch văn bản trong ảnh...")
+                    model = genai.GenerativeModel(MODEL_ID)
+                    res = model.generate_content([f"Dịch chữ trong ảnh này: {instruction}", item['val']], safety_settings=safety_settings)
+                    final_content.append({"type": "image", "val": item['val'], "trans": res.text})
+            
+            status.update(label="✅ Đã dịch xong!", state="complete")
 
-            # Xuất file
-            docx_data = save_docx_mixed(final_results)
-            st.download_button(f"⬇️ Tải bản dịch {f.name}", docx_data, f"Dich_{f.name}.docx")
-
-elif menu == "🖼️ Dịch Ảnh (OCR)":
-    imgs = st.file_uploader("Tải ảnh:", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
-    if imgs and st.button("Dịch ngay"):
-        for im_f in imgs:
-            img = Image.open(im_f)
-            st.image(img, width=400)
-            with st.spinner("AI đang đọc ảnh..."):
-                res = model.generate_content(["Dịch toàn bộ chữ trong ảnh sang tiếng Việt:", img], safety_settings=safety_settings)
-                st.write(res.text)
-
-# (Phần Hỏi Đáp bạn có thể giữ nguyên logic cũ nhưng hãy dùng file_bytes.read() cẩn thận)
+            # Tạo file Word kết quả
+            doc_out = Document()
+            for c in final_content:
+                if c['type'] == 'text':
+                    doc_out.add_paragraph(c['val'])
+                else:
+                    img_io = io.BytesIO()
+                    c['val'].save(img_io, format='PNG')
+                    doc_out.add_picture(img_io, width=Inches(5))
+                    doc_out.add_paragraph(f"[Bản dịch ảnh]: {c['trans']}")
+            
+            bio = io.BytesIO()
+            doc_out.save(bio)
+            st.download_button(f"⬇️ Tải file dịch {f.name}", bio.getvalue(), f"Dich_3.1_{f.name}.docx")
